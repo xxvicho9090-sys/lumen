@@ -125,6 +125,48 @@ async function setFocus(on) {
 }
 document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && S.focusMode && !native) setFocus(false); });
 
+// ---------- zoom con los dedos / Ctrl+rueda ----------
+let hudT;
+function hud(text) {
+  const e = $('#zoomHud');
+  e.textContent = text;
+  e.classList.add('show');
+  clearTimeout(hudT);
+  hudT = setTimeout(() => e.classList.remove('show'), 800);
+}
+function attachPinch(view) {
+  const el = view.el;
+  const dist = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  let st = null;
+  const rel = (x, y) => { const r = el.getBoundingClientRect(); return [x - r.left, y - r.top]; };
+  el.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 2) return;
+    const [cx, cy] = rel((e.touches[0].clientX + e.touches[1].clientX) / 2, (e.touches[0].clientY + e.touches[1].clientY) / 2);
+    st = { d0: dist(e.touches), cx, cy, s: 1, base: view.zoomValue() };
+    view.pinchStart(st);
+    getSelection().removeAllRanges();
+  }, { passive: true });
+  el.addEventListener('touchmove', (e) => {
+    if (!st || e.touches.length !== 2) return;
+    st.s = dist(e.touches) / st.d0;
+    view.pinchMove(st);
+  }, { passive: true });
+  const end = () => { if (st) { const s = st; st = null; view.pinchEnd(s); } };
+  el.addEventListener('touchend', (e) => { if (st && e.touches.length < 2) end(); });
+  el.addEventListener('touchcancel', end);
+  // Laptop: Ctrl + rueda o pellizco en el trackpad.
+  let wz = null;
+  el.addEventListener('wheel', (e) => {
+    if (!e.ctrlKey) return;
+    e.preventDefault();
+    if (!wz) { const [cx, cy] = rel(e.clientX, e.clientY); wz = { cx, cy, s: 1, base: view.zoomValue() }; view.pinchStart(wz); }
+    wz.s *= Math.abs(e.deltaY) >= 50 ? (e.deltaY < 0 ? 1.15 : 1 / 1.15) : Math.exp(-e.deltaY * 0.01);
+    view.pinchMove(wz);
+    clearTimeout(wz.t);
+    wz.t = setTimeout(() => { const s = wz; wz = null; view.pinchEnd(s); }, 220);
+  }, { passive: false });
+}
+
 const bookById = (id) => S.books.find((b) => b.id === id);
 const hlList = (id) => { if (!S.hl.has(id)) S.hl.set(id, []); return S.hl.get(id); };
 const activeView = () => S.views.get(S.panes[S.focus]);
@@ -533,6 +575,7 @@ async function openBook(id) {
         } else view = await PdfPageView.create(appApi, book, pdf);
       } else view = new FlowView(appApi, book, await parseDoc(book, blob));
       view.el.dataset.id = id;
+      attachPinch(view);
       view.el.classList.add('off');
       $('#views').append(view.el);
       view.applyAll();
@@ -787,7 +830,7 @@ function renderCfg(box, v) {
   kids.push(h('div', { class: 'lbl' }, 'Tema'),
     h('div', { class: 'themes' }, ...Object.entries(themes).map(([k, [l, bg, fg]]) => h('button', { class: 'th' + (settings.theme === k ? ' on' : ''), style: `background:${bg};color:${fg}`, onclick: () => apply({ theme: k }) }, l))));
   kids.push(h('div', { class: 'lbl' }, 'Tamaño de letra', h('b', {}, settings.size + ' px')),
-    slider(14, 34, 1, settings.size, (n) => { saveSettings({ size: n }); $('#panelBody .lbl b').textContent = n + ' px'; }));
+    slider(12, 44, 1, settings.size, (n) => { saveSettings({ size: n }); $('#panelBody .lbl b').textContent = n + ' px'; }));
   kids.push(h('div', { class: 'lbl' }, 'Tipografía'), seg([['serif', 'Serif'], ['sans', 'Sans'], ['dislexia', 'Legible']], settings.font, (k) => apply({ font: k })));
   kids.push(h('div', { class: 'lbl' }, 'Interlineado'), slider(1.3, 2.2, 0.05, settings.lh, (n) => saveSettings({ lh: n })));
   kids.push(h('div', { class: 'lbl' }, 'Ancho del texto'), seg([['estrecho', 'Estrecho'], ['medio', 'Medio'], ['ancho', 'Ancho']], settings.width, (k) => apply({ width: k })));
@@ -798,7 +841,7 @@ function renderCfg(box, v) {
     if (v.kind === 'pdf') {
       const zl = h('b', {}, Math.round(settings.pdfZoom * 100) + ' %');
       kids.push(h('div', { class: 'lbl' }, 'Zoom de página', zl),
-        slider(0.6, 2.5, 0.1, settings.pdfZoom, (n) => { zl.textContent = Math.round(n * 100) + ' %'; clearTimeout(S.zt); S.zt = setTimeout(() => apply({ pdfZoom: n }), 250); }));
+        slider(0.5, 4, 0.1, settings.pdfZoom, (n) => { zl.textContent = Math.round(n * 100) + ' %'; clearTimeout(S.zt); S.zt = setTimeout(() => apply({ pdfZoom: n }), 250); }));
     }
   }
   const toggle = (on, fn) => h('button', { class: 'toggle' + (on ? ' on' : ''), role: 'switch', 'aria-checked': String(on), onclick: fn });
@@ -932,7 +975,7 @@ async function bookMenu(id) {
   }
 }
 
-const appApi = { hls: (id) => S.hl.get(id) || [], onScroll, editHl, pdfTexts };
+const appApi = { hls: (id) => S.hl.get(id) || [], onScroll, editHl, pdfTexts, hud };
 
 // ---------- arranque ----------
 export async function start() {
@@ -957,6 +1000,7 @@ export async function start() {
       <section id="viewer" hidden><div id="views"></div></section>
       <button id="fab">${I.plus} Añadir libro</button>
       <button id="exitFocus" aria-label="Salir de pantalla completa">${I.expand}</button>
+      <div id="zoomHud" role="status"></div>
       <div id="loading" hidden><div><div class="spin"></div><span id="loadtxt"></span></div></div>
     </main>
     <aside id="panel" aria-label="Panel"><div class="grab"></div><div id="panelBody"></div></aside>

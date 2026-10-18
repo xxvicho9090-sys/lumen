@@ -74,7 +74,7 @@ svg{display:block}
 #libnav button.on{color:var(--acc);font-weight:600}
 
 /* lector */
-.view{position:absolute;top:0;bottom:0;left:0;right:0;overflow:auto;background:var(--bg);-webkit-overflow-scrolling:touch}
+.view{position:absolute;top:0;bottom:0;left:0;right:0;overflow:auto;touch-action:pan-x pan-y;background:var(--bg);-webkit-overflow-scrolling:touch}
 .view.off{visibility:hidden;pointer-events:none}
 #views{position:absolute;inset:0}
 .paneedge{border-left:1px solid var(--line)}
@@ -214,3 +214,6 @@ body.focus #exitFocus{display:grid}
 body.focus #top,body.focus #bar{display:none}
 body.focus .doc{padding-top:calc(var(--st) + 26px);padding-bottom:70px}
 body.focus .pages{padding-top:calc(var(--st) + 4px);padding-bottom:40px}
+
+#zoomHud{position:absolute;left:50%;top:calc(var(--st) + 16px);transform:translateX(-50%);background:rgba(20,17,13,.8);color:#fff;padding:8px 16px;border-radius:99px;font-size:14px;font-weight:600;z-index:9;opacity:0;pointer-events:none;transition:opacity .15s}
+#zoomHud.show{opacity:1}

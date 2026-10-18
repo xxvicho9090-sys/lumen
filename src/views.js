@@ -1,7 +1,7 @@
 import { TextLayer } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { applyHl, removeHl, restyleHl } from './anchors.js';
 import { fold } from './parse.js';
-import { settings } from './settings.js';
+import { settings, saveSettings } from './settings.js';
 
 const snip = (s, i, len) => {
   const a = Math.max(0, i - 36);
@@ -177,6 +177,19 @@ export class FlowView {
     } catch { /* sin CSS Highlight API */ }
   }
 
+  // Zoom con los dedos: en texto que fluye cambia el tamaño de letra.
+  zoomValue() { return settings.size; }
+  pinchStart(st) { st.r = this.ratio(); }
+  pinchMove(st) {
+    const z = Math.min(Math.max(Math.round(st.base * st.s), 12), 44);
+    if (z === st.z) return;
+    st.z = z;
+    cancelAnimationFrame(st.raf);
+    st.raf = requestAnimationFrame(() => { document.documentElement.style.setProperty('--fs', z + 'px'); this.seek(st.r); });
+    this.app.hud?.(`${z} px`);
+  }
+  pinchEnd(st) { if (st.z != null) saveSettings({ size: st.z }); }
+
   suspend() {}
   resume() {}
   relayout() {}
@@ -247,7 +260,7 @@ export class PdfPageView {
   }
 
   // Calcula el tamaño de las páginas y empieza a dibujar las visibles.
-  relayout() {
+  relayout(skipPos) {
     const w = this.el.clientWidth;
     if (!w) return;
     const pos = this.getPos();
@@ -260,7 +273,7 @@ export class PdfPageView {
       this.io.unobserve(pg);
     });
     this.pgs.forEach((pg) => this.io.observe(pg));
-    if (this.started) this.setPos(pos); else this.started = true;
+    if (this.started && !skipPos) this.setPos(pos); else this.started = true;
   }
 
   pump() {
@@ -288,7 +301,8 @@ export class PdfPageView {
       pg.style.height = vp.height + 'px';
       pg.style.setProperty('--scale-factor', scale);
       pg.style.setProperty('--total-scale-factor', scale);
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      // Límite de píxeles por página para no agotar la memoria con zoom alto.
+      const dpr = Math.max(Math.min(window.devicePixelRatio || 1, 2, Math.sqrt(16e6 / (vp.width * vp.height))), 0.6);
       const cv = document.createElement('canvas');
       cv.width = Math.floor(vp.width * dpr);
       cv.height = Math.floor(vp.height * dpr);
@@ -378,6 +392,29 @@ export class PdfPageView {
       }
     }
     return out;
+  }
+
+  // Zoom con los dedos: se escala la vista mientras se pellizca y al soltar se redibuja nítida.
+  zoomValue() { return settings.pdfZoom; }
+  pinchStart(st) {
+    this.wrap.style.transformOrigin = `${this.el.scrollLeft + st.cx}px ${this.el.scrollTop + st.cy}px`;
+    this.wrap.style.willChange = 'transform';
+  }
+  pinchMove(st) {
+    st.z = Math.min(Math.max(st.base * st.s, 0.5), 4);
+    this.wrap.style.transform = `scale(${st.z / st.base})`;
+    this.app.hud?.(`${Math.round(st.z * 100)} %`);
+  }
+  pinchEnd(st) {
+    this.wrap.style.transform = '';
+    this.wrap.style.willChange = '';
+    if (st.z == null || Math.abs(st.z - st.base) < 0.02) return;
+    const sl = this.el.scrollLeft, stp = this.el.scrollTop, old = this.pw;
+    saveSettings({ pdfZoom: Math.round(st.z * 100) / 100 });
+    this.relayout(true);
+    const r = this.pw / old;
+    this.el.scrollTop = (stp + st.cy) * r - st.cy;
+    this.el.scrollLeft = (sl + st.cx) * r - st.cx;
   }
 
   suspend() {
