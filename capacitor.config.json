@@ -1,0 +1,16 @@
+{
+  "appId": "com.lumen.reader",
+  "appName": "Lumen",
+  "webDir": "dist",
+  "android": { "backgroundColor": "#14110D" },
+  "plugins": {
+    "CapacitorUpdater": {
+      "autoUpdate": false,
+      "statsUrl": "",
+      "appReadyTimeout": 10000,
+      "autoDeleteFailed": true,
+      "autoDeletePrevious": true,
+      "resetWhenUpdate": true
+    }
+  }
+}

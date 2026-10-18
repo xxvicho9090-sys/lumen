@@ -1,0 +1,9 @@
+node_modules
+dist
+android/app/build
+android/.gradle
+*.keystore
+public/pdfjs
+public/test
+android/local.properties
+android/.gradle
