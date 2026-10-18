@@ -1,4 +1,4 @@
-import { Capacitor } from '@capacitor/core';
+import { Capacitor, SystemBars } from '@capacitor/core';
 import { App as CapApp } from '@capacitor/app';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
@@ -40,6 +40,7 @@ const I = {
   split: svg('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/>'),
   sliders: svg('<path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/>'),
   download: svg('<path d="M12 4v11M8 11l4 4 4-4M5 19h14"/>'),
+  expand: svg('<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>'),
   share: svg('<path d="M12 4v12M8 8l4-4 4 4M5 14v5h14v-5"/>'),
 };
 const PALETTE = ['#F5C25B', '#7FB7A4', '#E8836B', '#B9A6E8', '#8FB8E8', '#E8C0A0'];
@@ -106,6 +107,23 @@ async function applyMirror(book) {
   for (const x of m.hl) if (x.bookId === mb.id) { await DB.putHl({ ...x, bookId: book.id }); n++; }
   return n;
 }
+
+// ---------- pantalla completa / concentración ----------
+async function setFocus(on) {
+  on = !!on && S.screen === 'reader';
+  if (on === !!S.focusMode) return;
+  S.focusMode = on;
+  document.body.classList.toggle('focus', on);
+  if (on) { closePanel(); hideBar(); }
+  try {
+    if (native) await (on ? SystemBars.hide() : SystemBars.show());
+    else if (on) await document.documentElement.requestFullscreen?.();
+    else if (document.fullscreenElement) await document.exitFullscreen();
+  } catch { /* el navegador no permite pantalla completa */ }
+  if (on) toast('Modo concentración · toca ⤡ arriba a la derecha para salir', { ms: 3500 });
+  requestAnimationFrame(() => S.views.forEach((v) => v.relayout?.()));
+}
+document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && S.focusMode && !native) setFocus(false); });
 
 const bookById = (id) => S.books.find((b) => b.id === id);
 const hlList = (id) => { if (!S.hl.has(id)) S.hl.set(id, []); return S.hl.get(id); };
@@ -248,6 +266,19 @@ async function removeHlRec(bookId, rec, view) {
   l.splice(l.indexOf(rec), 1);
   await DB.delHl(rec.id);
 }
+async function deleteWithUndo(bookId, recs, view) {
+  for (const r of recs) await removeHlRec(bookId, r, view);
+  renderBar();
+  if (S.panel === 'hl') renderPanel();
+  if (S.screen !== 'reader' && S.libTab === 'hls') renderAllHl();
+  toast(recs.length > 1 ? `${recs.length} subrayados borrados` : 'Subrayado borrado', { ms: 7000, action: { label: 'Deshacer', fn: async () => {
+    for (const r of recs) { hlList(bookId).push(r); await DB.putHl(r); view?.addHl(r); }
+    renderBar();
+    if (S.panel === 'hl') renderPanel();
+    if (S.screen !== 'reader' && S.libTab === 'hls') renderAllHl();
+  } } });
+}
+const overlapping = (bookId, anchors) => hlList(bookId).filter((o) => anchors.some((a) => a.sec === o.sec && o.s < a.e && o.e > a.s));
 function findHl(id) {
   for (const [bookId, l] of S.hl) { const r = l.find((x) => x.id === id); if (r) return { rec: r, bookId }; }
   return null;
@@ -255,11 +286,12 @@ function findHl(id) {
 
 // ---------- barra flotante de selección ----------
 let selT, hideT;
-function showBar(rect, mode, cur) {
+function showBar(rect, mode, cur, canErase) {
   const bar = $('#selbar');
   bar.innerHTML = HL_COLORS.map((c, i) => `<button class="c${i === cur ? ' cur' : ''}" data-c="${i}" style="background:${c}" aria-label="${HL_NAMES[i]}"></button>`).join('')
     + `<span class="sep"></span><button class="a" data-a="note">${I.note}Nota</button><button class="a" data-a="copy" aria-label="Copiar">${I.copy}</button>`
-    + (mode === 'edit' ? `<button class="a" data-a="del" aria-label="Quitar subrayado">${I.trash}</button>` : '');
+    + (mode === 'edit' ? `<button class="a" data-a="del" aria-label="Quitar subrayado">${I.trash}Borrar</button>` : '')
+    + (mode === 'new' && canErase ? `<button class="a" data-a="erase" aria-label="Borrar subrayados de la selección">${I.trash}Borrar</button>` : '');
   bar.style.visibility = 'hidden';
   bar.hidden = false;
   const w = bar.offsetWidth, hh = bar.offsetHeight;
@@ -289,9 +321,10 @@ function onSelection() {
   const range = sel.getRangeAt(0);
   const anchors = anchorsFromRange(range, v.roots());
   if (!anchors.length) return;
-  S.pending = { kind: 'new', view: v, anchors };
-  if (settings.auto) { createHl(settings.color); return; }
-  showBar(range.getBoundingClientRect(), 'new', settings.color);
+  const hits = overlapping(v.book.id, anchors);
+  S.pending = { kind: 'new', view: v, anchors, hits };
+  if (settings.auto && !hits.length) { createHl(settings.color); return; }
+  showBar(range.getBoundingClientRect(), 'new', settings.color, hits.length > 0);
 }
 function editHl(id, markEl) {
   const f = findHl(id);
@@ -329,9 +362,13 @@ async function onBarClick(e) {
   } else if (b.dataset.a === 'del') {
     const f = findHl(p.id);
     hideBar();
-    await removeHlRec(f.bookId, f.rec, activeOrAny(f.bookId));
-    renderBar();
-    if (S.panel === 'hl') renderPanel();
+    await deleteWithUndo(f.bookId, [f.rec], activeOrAny(f.bookId));
+  } else if (b.dataset.a === 'erase') {
+    const hits = p.hits || [];
+    const view = p.view;
+    getSelection().removeAllRanges();
+    hideBar();
+    if (hits.length) await deleteWithUndo(view.book.id, hits, view);
   }
 }
 const activeOrAny = (bookId) => S.views.get(bookId);
@@ -542,6 +579,7 @@ function showInPane(id) {
   saveSession();
 }
 function layout() {
+  if (S.screen !== 'reader') setFocus(false);
   if (innerWidth < 1100 && S.split) { S.split = false; S.panes = S.panes.slice(0, 1); S.focus = 0; }
   const reader = S.screen === 'reader';
   $('#library').hidden = reader;
@@ -564,6 +602,7 @@ function layout() {
 }
 function goLibrary() {
   S.screen = 'library';
+  setFocus(false);
   closePanel();
   hideBar();
   layout();
@@ -679,7 +718,12 @@ function renderPanel() {
       ...HL_COLORS.map((c, i) => h('button', { class: 'chip' + (S.hlFilter === i ? ' on' : ''), onclick: () => { S.hlFilter = i; renderPanel(); } }, h('i', { style: `display:inline-block;width:10px;height:10px;border-radius:50%;background:${c};margin-right:6px` }), HL_NAMES[i])));
     box.replaceChildren(
       h('div', { class: 'ph' }, h('h2', {}, `Subrayados · ${all.length}`),
-        h('button', { class: 'btn ghost', onclick: () => exportHl(v.book) }, 'Exportar')),
+        h('div', { style: 'display:flex;gap:8px' },
+          all.length ? h('button', { class: 'btn ghost', onclick: async () => {
+            const ok = await choose(`¿Borrar los ${all.length} subrayados de este documento?`, [{ label: 'Sí, borrar todos', sub: 'Podrás deshacerlo justo después', value: true, danger: true }]);
+            if (ok) deleteWithUndo(v.book.id, all.slice(), v);
+          } }, 'Borrar todo') : null,
+          h('button', { class: 'btn ghost', onclick: () => exportHl(v.book) }, 'Exportar'))),
       chips,
       ...(list.length ? list.map((x) => hlItem(x, v.book, () => { v.gotoHl(x); if (!wide()) closePanel(); }, v))
         : [h('div', { class: 'sub' }, 'Selecciona texto en el documento y elige un color para subrayar. El subrayado queda fijo sobre las letras.')]));
@@ -717,7 +761,7 @@ function hlItem(x, book, go, view) {
       h('div', { class: 'meta' }, [locLabel(book, x), HL_NAMES[x.color]].filter(Boolean).join(' · '))),
     h('div', { class: 'acts' },
       h('button', { 'aria-label': 'Nota', html: I.note, onclick: () => setNote(x, S.views.get(book.id)).then(() => S.libTab === 'hls' && renderAllHl()) }),
-      h('button', { 'aria-label': 'Quitar', html: I.trash, onclick: async () => { await removeHlRec(book.id, x, S.views.get(book.id)); renderBar(); if (S.screen === 'reader') renderPanel(); else renderAllHl(); } })));
+      h('button', { 'aria-label': 'Quitar', html: I.trash, onclick: () => deleteWithUndo(book.id, [x], S.views.get(book.id)) })));
 }
 function exportHl(book) {
   const list = hlList(book.id).slice().sort((a, b) => a.sec - b.sec || a.s - b.s);
@@ -912,6 +956,7 @@ export async function start() {
       </section>
       <section id="viewer" hidden><div id="views"></div></section>
       <button id="fab">${I.plus} Añadir libro</button>
+      <button id="exitFocus" aria-label="Salir de pantalla completa">${I.expand}</button>
       <div id="loading" hidden><div><div class="spin"></div><span id="loadtxt"></span></div></div>
     </main>
     <aside id="panel" aria-label="Panel"><div class="grab"></div><div id="panelBody"></div></aside>
@@ -924,6 +969,7 @@ export async function start() {
       <button data-p="search">${I.search}Buscar</button>
       <button id="markBtn" aria-label="Marcador automático">${I.marker}Marcador</button>
       <button data-p="cfg">${I.type}Ajustes</button>
+      <button id="focusBtn" aria-label="Pantalla completa">${I.expand}Completa</button>
     </div>
   </footer>
   <nav id="libnav"><button data-t="books" class="on">Biblioteca</button><button data-t="hls">Subrayados</button></nav>
@@ -949,6 +995,7 @@ export async function start() {
   $('#cfgBtn').onclick = () => openPanel('cfg');
   $('#splitBtn').onclick = toggleSplit;
   $('#installBtn').onclick = doInstall;
+  $('#exitFocus').onclick = () => setFocus(false);
   installUi();
   $('#fab').onclick = () => $('#file').click();
   $('#file').onchange = (e) => { const f = [...e.target.files]; e.target.value = ''; onFiles(f); };
@@ -966,6 +1013,7 @@ export async function start() {
     const b = e.target.closest('button');
     if (!b) return;
     if (b.dataset.p) openPanel(b.dataset.p);
+    else if (b.id === 'focusBtn') setFocus(true);
     else if (b.id === 'markBtn') { saveSettings({ auto: !settings.auto }); toast(settings.auto ? 'Marcador automático activado' : 'Marcador automático apagado'); renderBar(); }
   };
   $('#seek').oninput = (e) => { const v = activeView(); if (v) v.seek(e.target.value / 1000); };
@@ -979,7 +1027,9 @@ export async function start() {
   });
   document.addEventListener('selectionchange', () => { clearTimeout(selT); selT = setTimeout(onSelection, 320); });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { if (S.closeModal) S.closeModal(); else if (S.panel) closePanel(); else hideBar(); }
+    const typing = /^(INPUT|TEXTAREA)$/.test(e.target.tagName);
+    if (e.key === 'Escape') { if (S.closeModal) S.closeModal(); else if (S.panel) closePanel(); else if (S.focusMode) setFocus(false); else hideBar(); }
+    else if (e.key.toLowerCase() === 'f' && !e.ctrlKey && !e.metaKey && !e.altKey && !typing && S.screen === 'reader' && !S.closeModal) setFocus(!S.focusMode);
     else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f' && S.screen === 'reader') { e.preventDefault(); S.panel = null; openPanel('search'); }
   });
   addEventListener('resize', () => { if (innerWidth < 1100 && S.split) { layout(); } });
@@ -998,6 +1048,7 @@ export async function start() {
   if (native) {
     CapApp.addListener('backButton', () => {
       if (S.closeModal) S.closeModal();
+      else if (S.focusMode) setFocus(false);
       else if (!$('#selbar').hidden) hideBar();
       else if (S.panel) closePanel();
       else if (S.screen === 'reader') goLibrary();
