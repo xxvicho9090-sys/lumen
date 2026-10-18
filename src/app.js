@@ -39,6 +39,7 @@ const I = {
   copy: svg('<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/>'),
   split: svg('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/>'),
   sliders: svg('<path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/>'),
+  download: svg('<path d="M12 4v11M8 11l4 4 4-4M5 19h14"/>'),
   share: svg('<path d="M12 4v12M8 8l4-4 4 4M5 14v5h14v-5"/>'),
 };
 const PALETTE = ['#F5C25B', '#7FB7A4', '#E8836B', '#B9A6E8', '#8FB8E8', '#E8C0A0'];
@@ -50,8 +51,62 @@ const wide = () => innerWidth >= 900;
 const S = {
   books: [], hl: new Map(), views: new Map(), tabs: [], panes: [], focus: 0, split: false,
   screen: 'library', libTab: 'books', folders: [], lib: { folder: 'all', tag: 'all', fmt: 'all', q: '' }, panel: null, hlFilter: null,
-  pending: null, hlLoaded: new Set(), texts: new Map(), textP: new Map(), saveT: {}, barTouched: false,
+  pending: null, mirror: null, hlLoaded: new Set(), texts: new Map(), textP: new Map(), saveT: {}, barTouched: false,
 };
+// ---------- instalar en laptop / almacenamiento / copia espejo ----------
+let deferredInstall = null;
+const standalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+function installUi() {
+  const b = document.getElementById('installBtn');
+  if (b) b.hidden = !(deferredInstall && !native && !standalone());
+  if (S.panel === 'cfg') renderPanel();
+}
+addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferredInstall = e; installUi(); });
+addEventListener('appinstalled', () => { deferredInstall = null; installUi(); toast('Lumen instalada: ábrela desde el menú Inicio o el escritorio'); });
+async function doInstall() {
+  if (!deferredInstall) { toast('En el menú del navegador (⋮) elige “Instalar Lumen”', { ms: 5000 }); return; }
+  deferredInstall.prompt();
+  await deferredInstall.userChoice.catch(() => {});
+  deferredInstall = null;
+  installUi();
+}
+async function storageInfo() {
+  const r = { persisted: null, usage: null, quota: null };
+  try {
+    r.persisted = await navigator.storage.persisted();
+    const e = await navigator.storage.estimate();
+    r.usage = e.usage; r.quota = e.quota;
+  } catch { /* sin API */ }
+  return r;
+}
+const sizeLabel = (n) => (n > 1e9 ? (n / 1e9).toFixed(1) + ' GB' : Math.round(n / 1e6) + ' MB');
+
+let mirrorT;
+const scheduleMirror = () => { if (native) { clearTimeout(mirrorT); mirrorT = setTimeout(writeMirror, 4000); } };
+async function backupData() {
+  return { app: 'lumen', v: 1, at: Date.now(), folders: S.folders, hl: await DB.allHl(),
+    books: S.books.map(({ id, title, name, size, format, tag, folder, progress, pos, mode }) => ({ id, title, name, size, format, tag, folder, progress, pos, mode })) };
+}
+// Copia espejo fuera de la base del WebView: si esta se borrara, los subrayados y carpetas se recuperan.
+async function writeMirror() {
+  if (!S.books.length) return;
+  try { await Filesystem.writeFile({ path: 'backup/lumen.json', data: JSON.stringify(await backupData()), directory: Directory.Data, encoding: Encoding.UTF8, recursive: true }); } catch (e) { console.warn('espejo', e); }
+}
+async function readMirror() {
+  try { return JSON.parse((await Filesystem.readFile({ path: 'backup/lumen.json', directory: Directory.Data, encoding: Encoding.UTF8 })).data); } catch { return null; }
+}
+async function applyMirror(book) {
+  const m = S.mirror;
+  const mb = m?.books.find((x) => x.name === book.name && x.size === book.size);
+  if (!mb) return 0;
+  if (mb.folder && S.folders.some((f) => f.id === mb.folder)) book.folder = mb.folder;
+  book.tag = mb.tag || book.tag; book.title = mb.title || book.title; book.pos = mb.pos || null; book.progress = mb.progress || 0; book.mode = mb.mode;
+  if (mb.pos) book.lastRead = 1;
+  let n = 0;
+  for (const x of m.hl) if (x.bookId === mb.id) { await DB.putHl({ ...x, bookId: book.id }); n++; }
+  return n;
+}
+
 const bookById = (id) => S.books.find((b) => b.id === id);
 const hlList = (id) => { if (!S.hl.has(id)) S.hl.set(id, []); return S.hl.get(id); };
 const activeView = () => S.views.get(S.panes[S.focus]);
@@ -405,6 +460,8 @@ async function addFile(file, tag, folder = null) {
       book.author = m.author;
     }
     await DB.putBlob(id, file);
+    const rec = await applyMirror(book);
+    if (rec) toast(`Recuperé ${rec} subrayados de este documento`);
     await DB.putBook(book);
   } catch (e) {
     console.warn(e);
@@ -705,6 +762,18 @@ function renderCfg(box, v) {
     toggle(settings.auto, () => apply({ auto: !settings.auto }))));
   kids.push(h('div', { class: 'lbl' }, 'Color del marcador'), h('div', { class: 'seg' }, ...HL_COLORS.map((c, i) =>
     h('button', { class: settings.color === i ? 'on' : '', 'aria-label': HL_NAMES[i], onclick: () => apply({ color: i }) }, h('i', { style: `display:block;height:18px;border-radius:9px;background:${c}` })))));
+  kids.push(h('div', { class: 'lbl' }, 'Datos'));
+  const stRow = h('div', { class: 'row2' }, h('div', { class: 'sub' }, 'Revisando almacenamiento…'));
+  kids.push(stRow);
+  storageInfo().then((si) => {
+    const use = si.usage != null ? ` · usando ${sizeLabel(si.usage)}` : '';
+    const msg = native ? 'Tus documentos, subrayados y carpetas se guardan en el teléfono y siguen ahí al cerrar la app, con copia espejo automática.'
+      : si.persisted ? 'Protegido: el navegador no borrará tus datos por su cuenta.' : 'Aún sin proteger: instala la app o pulsa “Proteger” para que el navegador no borre tus datos.';
+    stRow.replaceChildren(h('div', {}, h('div', {}, native || si.persisted ? 'Almacenamiento protegido ✓' : 'Almacenamiento'), h('div', { class: 'sub' }, msg + use)),
+      !native && !si.persisted ? h('button', { class: 'btn', onclick: async () => { await DB.persist(); renderPanel(); } }, 'Proteger') : null);
+  });
+  if (!native && !standalone()) kids.push(h('div', { class: 'row2' }, h('div', {}, h('div', {}, 'Instalar en esta laptop'), h('div', { class: 'sub' }, 'Se abre como programa propio, sin entrar a la página')),
+    h('button', { class: 'btn', onclick: doInstall }, 'Instalar')));
   const st = getUpdateStatus();
   const txt = { idle: 'Sin revisar', checking: 'Buscando…', latest: 'Estás al día', downloading: `Descargando ${st.version || ''}…`, ready: `La versión ${st.version} está lista`, offline: 'No se pudo conectar al servidor' }[st.state] || '';
   kids.push(h('div', { class: 'lbl' }, 'Aplicación'),
@@ -728,9 +797,7 @@ async function setPdfMode(book, mode) {
 
 // ---------- copia de seguridad ----------
 async function exportBackup() {
-  const hl = await DB.allHl();
-  const data = { app: 'lumen', v: 1, books: S.books.map(({ id, title, name, size, format, tag, progress, pos, mode }) => ({ id, title, name, size, format, tag, progress, pos, mode })), hl };
-  saveText('lumen-copia.json', JSON.stringify(data), 'application/json');
+  saveText('lumen-copia.json', JSON.stringify(await backupData()), 'application/json');
 }
 async function importBackup(file) {
   try {
@@ -832,6 +899,7 @@ export async function start() {
     <button class="ib" id="homeBtn" aria-label="Biblioteca">${I.book}</button>
     <div id="tabs" role="tablist"></div>
     <button class="ib split-only" id="splitBtn" aria-label="Dividir pantalla">${I.split}</button>
+    <button class="btn" id="installBtn" hidden>${I.download}<span>Instalar app</span></button>
     <button class="ib" id="cfgBtn" aria-label="Ajustes">${I.sliders}</button>
   </header>
   <div id="body">
@@ -866,11 +934,22 @@ export async function start() {
 
   S.books = await DB.allBooks();
   S.folders = (await DB.kvGet('folders').catch(() => null)) || [];
+  DB.persist();
+  DB.onWrite(scheduleMirror);
+  if (native && !S.books.length) {
+    S.mirror = await readMirror();
+    if (S.mirror?.books?.length) {
+      if (!S.folders.length && S.mirror.folders?.length) { S.folders = S.mirror.folders; DB.kvSet('folders', S.folders); }
+      setTimeout(() => toast('Encontré la copia de tus subrayados y carpetas: vuelve a añadir tus documentos y se recuperan solos', { ms: 7000 }), 800);
+    }
+  }
   const ses = await DB.kvGet('session').catch(() => null);
 
   $('#homeBtn').onclick = goLibrary;
   $('#cfgBtn').onclick = () => openPanel('cfg');
   $('#splitBtn').onclick = toggleSplit;
+  $('#installBtn').onclick = doInstall;
+  installUi();
   $('#fab').onclick = () => $('#file').click();
   $('#file').onchange = (e) => { const f = [...e.target.files]; e.target.value = ''; onFiles(f); };
   $('#bk').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) importBackup(f); };

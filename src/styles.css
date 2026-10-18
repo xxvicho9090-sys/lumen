@@ -204,3 +204,6 @@ input[type=range]{width:100%;accent-color:var(--acc)}
 .chip.add{border-style:dashed;color:var(--acc)}
 .fhead{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin:6px 0 14px;padding:12px 14px;background:var(--panel);border:1px solid var(--line);border-radius:16px}
 .fhead b{font:600 18px var(--disp)}
+
+#installBtn{display:flex;align-items:center;gap:6px;margin:0 4px 6px;padding:8px 14px;font-size:13px;flex:none}
+#installBtn .ic{width:16px;height:16px}
