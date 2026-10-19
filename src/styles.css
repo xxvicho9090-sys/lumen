@@ -316,3 +316,18 @@ body.focus #focusList:not([hidden]){display:block}
 .fl-t .dot{width:9px;height:9px;border-radius:50%;flex:none}
 .fl-x{width:40px;height:40px;font-size:20px;color:var(--mut);border-radius:10px}
 .fl-x:hover{background:var(--chip)}
+
+#modal .box.voices{width:min(520px,100%);max-height:86vh;display:flex;flex-direction:column}
+.vlist{overflow-y:auto;flex:1;min-height:120px;border-top:1px solid var(--line)}
+.vo{display:block;width:100%;text-align:left;padding:13px 6px;border-bottom:1px solid var(--line);font-size:16px;position:relative}
+.vo small{display:block;color:var(--mut);font-size:12px;margin-top:2px}
+.vo.on{color:var(--acc);font-weight:600}
+.vo.on::after{content:'✓';position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:18px}
+
+/* barra inferior ocultable */
+body.nobar #bar{display:none}
+#barShow{position:absolute;right:12px;bottom:calc(var(--sb) + 10px);width:42px;height:42px;border-radius:50%;background:rgba(20,17,13,.55);color:#fff;display:none;place-items:center;z-index:7;opacity:.4;transition:opacity .2s;backdrop-filter:blur(6px)}
+#barShow svg{transform:rotate(180deg)}
+body.nobar #barShow:not([hidden]){display:grid}
+body.focus #barShow{display:none!important}
+#barShow:hover,#barShow:active,#barShow:focus-visible{opacity:1}

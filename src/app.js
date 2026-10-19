@@ -41,6 +41,7 @@ const I = {
   sliders: svg('<path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/>'),
   download: svg('<path d="M12 4v11M8 11l4 4 4-4M5 19h14"/>'),
   expand: svg('<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>'),
+  chevron: svg('<path d="m6 9 6 6 6-6"/>'),
   bookmark: svg('<path d="M6 4h12v16l-6-4-6 4z"/>'),
   timer: svg('<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2M9 2h6"/>'),
   voice: svg('<path d="M4 10v4h4l5 4V6L8 10zM16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"/>'),
@@ -173,6 +174,17 @@ function attachPinch(view) {
     clearTimeout(wz.t);
     wz.t = setTimeout(() => { const s = wz; wz = null; view.pinchEnd(s); }, 220);
   }, { passive: false });
+}
+
+// Ocultar o mostrar la barra inferior (progreso y herramientas) para leer sin distracciones.
+function setBarHidden(hide) {
+  saveSettings({ barHidden: !!hide });
+  document.body.classList.toggle('nobar', settings.barHidden);
+  $('#barShow').hidden = !(settings.barHidden && S.screen === 'reader');
+  if (settings.barHidden && S.panel) closePanel();
+  if (settings.barHidden) toast('Barra oculta · toca la flecha abajo a la derecha o pulsa B para mostrarla', { ms: 3500 });
+  requestAnimationFrame(() => S.views.forEach((v) => v.relayout?.()));
+  if (S.panel === 'cfg') renderPanel();
 }
 
 // Documentos abiertos dentro del modo pantalla completa.
@@ -747,6 +759,7 @@ function layout() {
   $('#fab').hidden = reader;
   $('#libnav').hidden = reader;
   $('#bar').hidden = !reader;
+  $('#barShow').hidden = !(reader && settings.barHidden);
   const two = S.panes.length === 2;
   S.views.forEach((v, id) => {
     const idx = S.panes.indexOf(id);
@@ -986,6 +999,10 @@ function renderCfg(box, v) {
     toggle(settings.auto, () => apply({ auto: !settings.auto }))));
   kids.push(h('div', { class: 'lbl' }, 'Color del marcador'), h('div', { class: 'seg' }, ...HL_COLORS.map((c, i) =>
     h('button', { class: settings.color === i ? 'on' : '', 'aria-label': HL_NAMES[i], onclick: () => apply({ color: i }) }, h('i', { style: `display:block;height:18px;border-radius:9px;background:${c}` })))));
+  kids.push(h('div', { class: 'row2' }, h('div', {}, h('div', {}, 'Mostrar barra inferior'), h('div', { class: 'sub' }, 'Progreso y herramientas. También con el botón ⌄ de la barra o la tecla B')),
+    toggle(!settings.barHidden, () => setBarHidden(!settings.barHidden))));
+  kids.push(h('div', { class: 'row2' }, h('div', {}, h('div', {}, 'Voz de lectura'), h('div', { class: 'sub' }, settings.ttsVoiceLabel || 'Automática · varias en español latino')),
+    h('button', { class: 'btn ghost', onclick: voicePicker }, 'Elegir voz')));
   kids.push(h('div', { class: 'row2' }, h('div', {}, h('div', {}, 'Pasar página tocando los bordes'), h('div', { class: 'sub' }, 'Toca el borde izquierdo o derecho para retroceder o avanzar. En laptop: flechas ← → o espacio')),
     toggle(settings.tapTurn, () => apply({ tapTurn: !settings.tapTurn }))));
   const gl = h('b', {}, settings.goal + ' min');
@@ -1359,14 +1376,71 @@ async function ttsItems(v) {
   }
   return items;
 }
+// ---------- voces en español (latino primero) ----------
+const CC = { MX: 'México', US: 'Estados Unidos (latino)', AR: 'Argentina', CO: 'Colombia', CL: 'Chile', PE: 'Perú', VE: 'Venezuela', BO: 'Bolivia', EC: 'Ecuador', UY: 'Uruguay', PY: 'Paraguay', CR: 'Costa Rica', GT: 'Guatemala', PA: 'Panamá', DO: 'Rep. Dominicana', CU: 'Cuba', HN: 'Honduras', NI: 'Nicaragua', SV: 'El Salvador', PR: 'Puerto Rico', '419': 'Latinoamérica', ES: 'España' };
+const CC_ORDER = ['MX', 'US', '419', 'AR', 'CO', 'CL', 'PE', 'VE', 'EC', 'UY', 'PY', 'BO', 'CR', 'GT', 'PA', 'DO', 'CU', 'HN', 'NI', 'SV', 'PR', 'ES'];
+const ccOf = (v) => ((v.lang || '').replace('_', '-').split('-')[1] || '').toUpperCase();
+async function listVoices() {
+  let vs = [];
+  if (ttsNative()) { try { vs = (await Tts.getVoices()).voices || []; } catch { vs = []; } }
+  else if ('speechSynthesis' in window) {
+    const read = () => speechSynthesis.getVoices().map((v) => ({ name: v.name, lang: v.lang, network: !v.localService }));
+    vs = read();
+    if (!vs.length) { await new Promise((r) => { speechSynthesis.onvoiceschanged = r; setTimeout(r, 900); }); vs = read(); }
+  }
+  vs = vs.filter((v) => /^es/i.test((v.lang || '').replace('_', '-')));
+  vs.sort((a, b) => (CC_ORDER.indexOf(ccOf(a)) + 1 || 99) - (CC_ORDER.indexOf(ccOf(b)) + 1 || 99) || a.name.localeCompare(b.name));
+  const seen = {};
+  for (const v of vs) {
+    const cc = ccOf(v);
+    seen[cc] = (seen[cc] || 0) + 1;
+    const web = !/^[a-z]{2,3}[-_]/i.test(v.name);
+    const nm = web ? v.name.replace(/^(Microsoft|Google)\s+/i, '').split(' - ')[0].replace(/\s*Online.*$/i, '').trim() : '';
+    const country = CC[cc] || 'Español';
+    v.title = nm && !/^espa/i.test(nm) ? nm : `${country} · voz ${seen[cc]}`;
+    v.sub = [country, v.network ? 'necesita internet' : 'sin conexión', /natural|neural|online/i.test(v.name) || (v.quality || 0) >= 400 ? 'alta calidad' : ''].filter(Boolean).join(' · ');
+  }
+  return vs;
+}
+async function voicePicker() {
+  const wasPlaying = S.tts?.playing;
+  if (S.tts) { S.tts.playing = false; ttsEngineStop(); }
+  const vs = await listVoices();
+  await modal((box, close) => {
+    box.classList.add('voices');
+    const draw = () => {
+      const items = vs.map((v) => h('button', { class: 'vo' + (settings.ttsVoice === v.name ? ' on' : ''), onclick: async () => {
+        saveSettings({ ttsVoice: v.name, ttsVoiceLabel: v.title });
+        draw();
+        ttsEngineStop();
+        try { await speakChunk('Hola, así suena esta voz de lectura.', settings.ttsRate || 1); } catch { toast('No se pudo probar esa voz'); }
+      } }, h('span', {}, v.title), h('small', {}, v.sub)));
+      box.replaceChildren(
+        h('h3', {}, 'Voz de lectura'),
+        h('div', { class: 'sub', style: 'margin-bottom:10px' }, vs.length ? 'Toca una voz para escucharla y elegirla. Van primero las de español latino.' : 'Este dispositivo no tiene voces en español instaladas.'),
+        h('div', { class: 'vlist' }, h('button', { class: 'vo' + (!settings.ttsVoice ? ' on' : ''), onclick: () => { saveSettings({ ttsVoice: '', ttsVoiceLabel: '' }); draw(); } }, h('span', {}, 'Automática'), h('small', {}, 'La que tenga el dispositivo por defecto')), ...items),
+        h('div', { class: 'acts' },
+          native ? h('button', { class: 'btn ghost', onclick: () => Tts.openSettings().catch(() => toast('No se pudieron abrir los ajustes de voz')) }, 'Instalar más voces…') : null,
+          h('button', { class: 'btn', onclick: () => close(null) }, 'Listo')));
+    };
+    draw();
+  });
+  ttsEngineStop();
+  if (S.tts && wasPlaying) { S.tts.playing = true; ttsLoop(); }
+  if (S.panel === 'cfg') renderPanel();
+}
 function speakChunk(text, rate) {
-  if (ttsNative()) return Tts.speak({ text, rate, lang: 'es-ES' });
+  const voice = settings.ttsVoice;
+  if (ttsNative()) return Tts.speak({ text, rate, lang: 'es-US', voice });
   return new Promise((res, rej) => {
     const u = new SpeechSynthesisUtterance(text);
-    u.lang = 'es-ES';
+    u.lang = 'es-MX';
     u.rate = rate;
     const vs = speechSynthesis.getVoices().filter((x) => x.lang?.toLowerCase().startsWith('es'));
-    if (vs.length) u.voice = vs.find((x) => /google|natural|online/i.test(x.name)) || vs[0];
+    const pick = vs.find((x) => x.name === voice)
+      || vs.filter((x) => !/-ES$/i.test(x.lang.replace('_', '-'))).find((x) => /google|natural|online/i.test(x.name))
+      || vs.find((x) => !/-ES$/i.test(x.lang.replace('_', '-'))) || vs[0];
+    if (pick) { u.voice = pick; u.lang = pick.lang; }
     u.onend = () => res({});
     u.onerror = (e) => (['interrupted', 'canceled'].includes(e.error) ? res({ stopped: true }) : rej(new Error(e.error)));
     speechSynthesis.speak(u);
@@ -1476,6 +1550,7 @@ const appApi = { hls: (id) => S.hl.get(id) || [], onScroll, editHl, pdfTexts, hu
 // ---------- arranque ----------
 export async function start() {
   applySettings();
+  document.body.classList.toggle('nobar', !!settings.barHidden);
   $('#app').innerHTML = `
 <div id="shell">
   <header id="top">
@@ -1500,16 +1575,17 @@ export async function start() {
       <div id="focusList" hidden></div>
       <div id="zoomCtl" aria-label="Zoom"><button id="zOut" class="ib" aria-label="Alejar">−</button><button id="zReset" class="ib" aria-label="Zoom normal">1:1</button><button id="zIn" class="ib" aria-label="Acercar">+</button></div>
       <div id="zoomHud" role="status"></div>
+      <button id="barShow" aria-label="Mostrar barra inferior" hidden>${I.chevron}</button>
       <div id="focusTimer" hidden></div>
       <div id="selActions" hidden><span id="selCount"></span><button id="selMove" class="btn">Mover</button><button id="selAll" class="btn ghost">Todo</button><button id="selDel" class="btn ghost">Eliminar</button><button id="selCancel" class="btn ghost">Cancelar</button></div>
       <div id="dropStrip" hidden></div>
-      <div id="ttsBar" hidden><button id="ttsPlay" class="ib" aria-label="Pausar o seguir"></button><button id="ttsStop" class="ib" aria-label="Detener lectura">${I.stop}</button><button id="ttsSpeed" class="chip" aria-label="Velocidad de lectura"></button><span id="ttsLabel"></span></div>
+      <div id="ttsBar" hidden><button id="ttsPlay" class="ib" aria-label="Pausar o seguir"></button><button id="ttsStop" class="ib" aria-label="Detener lectura">${I.stop}</button><button id="ttsSpeed" class="chip" aria-label="Velocidad de lectura"></button><button id="ttsVoice" class="chip" aria-label="Elegir voz">Voz</button><span id="ttsLabel"></span></div>
       <div id="loading" hidden><div><div class="spin"></div><span id="loadtxt"></span></div></div>
     </main>
     <aside id="panel" aria-label="Panel"><div class="grab"></div><div id="panelBody"></div></aside>
   </div>
   <footer id="bar" hidden>
-    <div class="row"><input id="seek" type="range" min="0" max="1000" aria-label="Posición en el documento"><span id="plabel"></span><button class="ib" id="bmBtn" aria-label="Marcar esta página">${I.bookmark}</button></div>
+    <div class="row"><input id="seek" type="range" min="0" max="1000" aria-label="Posición en el documento"><span id="plabel"></span><button class="ib" id="bmBtn" aria-label="Marcar esta página">${I.bookmark}</button><button class="ib" id="barHide" aria-label="Ocultar barra inferior" title="Ocultar barra (tecla B)">${I.chevron}</button></div>
     <div class="tools">
       <button data-p="toc">${I.list}Contenido</button>
       <button data-p="hl">${I.marker}<span id="hlN">Subrayados</span></button>
@@ -1547,6 +1623,8 @@ export async function start() {
   $('#cfgBtn').onclick = () => openPanel('cfg');
   $('#splitBtn').onclick = toggleSplit;
   $('#installBtn').onclick = doInstall;
+  $('#barHide').onclick = () => setBarHidden(true);
+  $('#barShow').onclick = () => setBarHidden(false);
   $('#exitFocus').onclick = () => setFocus(false);
   $('#focusDocs').onclick = (e) => { e.stopPropagation(); toggleFocusList(); };
   document.addEventListener('click', (e) => { const l = $('#focusList'); if (!l.hidden && !e.target.closest('#focusList, #focusDocs')) l.hidden = true; });
@@ -1624,6 +1702,7 @@ export async function start() {
   $('#ttsPlay').onclick = ttsPause;
   $('#ttsStop').onclick = stopTts;
   $('#ttsSpeed').onclick = ttsRate;
+  $('#ttsVoice').onclick = voicePicker;
   // Tocar los bordes pasa a la pantalla siguiente o anterior.
   $('#views').addEventListener('click', (e) => {
     const skip = S.skipTap;
@@ -1650,6 +1729,7 @@ export async function start() {
   document.addEventListener('keydown', (e) => {
     const typing = /^(INPUT|TEXTAREA)$/.test(e.target.tagName);
     if (e.key === 'Escape') { if (S.closeModal) S.closeModal(); else if (S.panel) closePanel(); else if (S.selMode) endSel(); else if (S.focusMode) setFocus(false); else hideBar(); }
+    else if (e.key.toLowerCase() === 'b' && !e.ctrlKey && !e.metaKey && !e.altKey && !typing && S.screen === 'reader' && !S.closeModal) setBarHidden(!settings.barHidden);
     else if (e.key.toLowerCase() === 'f' && !e.ctrlKey && !e.metaKey && !e.altKey && !typing && S.screen === 'reader' && !S.closeModal) setFocus(!S.focusMode);
     else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f' && S.screen === 'reader') { e.preventDefault(); S.panel = null; openPanel('search'); }
     else if (!typing && S.screen === 'reader' && !S.closeModal && (e.key === '[' || e.key === ']' || (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')))) {
