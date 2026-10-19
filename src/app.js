@@ -6,7 +6,7 @@ import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
 import * as DB from './db.js';
 import { settings, saveSettings, applySettings, HL_COLORS, HL_NAMES } from './settings.js';
-import { parseDoc, FORMATS, ext, epubMeta, extractPdfTexts, pdfTextSections, esc } from './parse.js';
+import { parseDoc, FORMATS, ext, epubMeta, extractPdfTexts, pdfTextSections, esc, fold } from './parse.js';
 import { FlowView, PdfPageView, pdfOutline } from './views.js';
 import { anchorsFromRange } from './anchors.js';
 import { onUpdateStatus, getUpdateStatus, checkForUpdate, applyNow } from './updater.js';
@@ -42,6 +42,7 @@ const I = {
   download: svg('<path d="M12 4v11M8 11l4 4 4-4M5 19h14"/>'),
   expand: svg('<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>'),
   chevron: svg('<path d="m6 9 6 6 6-6"/>'),
+  bulb: svg('<path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2.1h5c0-.9.4-1.6 1-2.1A6 6 0 0 0 12 3z"/>'),
   bookmark: svg('<path d="M6 4h12v16l-6-4-6 4z"/>'),
   timer: svg('<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2M9 2h6"/>'),
   voice: svg('<path d="M4 10v4h4l5 4V6L8 10zM16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"/>'),
@@ -59,7 +60,7 @@ const wide = () => innerWidth >= 900;
 const S = {
   books: [], hl: new Map(), views: new Map(), tabs: [], panes: [], focus: 0, split: false,
   screen: 'library', libTab: 'books', folders: [], lib: { folder: 'all', tag: 'all', fmt: 'all', q: '' }, panel: null, hlFilter: null,
-  sel: new Set(), selMode: false, pending: null, mirror: null, stats: { days: {}, books: {} }, timer: null, tts: null, hlLoaded: new Set(), texts: new Map(), textP: new Map(), saveT: {}, barTouched: false,
+  sel: new Set(), selMode: false, pending: null, mirror: null, stats: { days: {}, books: {} }, timer: null, tts: null, fey: [], pomoCycle: 0, hlLoaded: new Set(), texts: new Map(), textP: new Map(), saveT: {}, barTouched: false,
 };
 // ---------- instalar en laptop / almacenamiento / copia espejo ----------
 let deferredInstall = null;
@@ -92,7 +93,7 @@ const sizeLabel = (n) => (n > 1e9 ? (n / 1e9).toFixed(1) + ' GB' : Math.round(n 
 let mirrorT;
 const scheduleMirror = () => { if (native) { clearTimeout(mirrorT); mirrorT = setTimeout(writeMirror, 4000); } };
 async function backupData() {
-  return { app: 'lumen', v: 1, at: Date.now(), folders: S.folders, hl: await DB.allHl(),
+  return { app: 'lumen', v: 1, at: Date.now(), folders: S.folders, fey: S.fey, hl: await DB.allHl(),
     books: S.books.map(({ id, title, name, size, format, tag, folder, progress, pos, mode, marks, zoom, done }) => ({ id, title, name, size, format, tag, folder, progress, pos, mode, marks, zoom, done })) };
 }
 // Copia espejo fuera de la base del WebView: si esta se borrara, los subrayados y carpetas se recuperan.
@@ -113,6 +114,9 @@ async function applyMirror(book) {
   if (mb.pos) book.lastRead = 1;
   let n = 0;
   for (const x of m.hl) if (x.bookId === mb.id) { await DB.putHl({ ...x, bookId: book.id }); n++; }
+  let nf = 0;
+  for (const c of m.fey || []) if (c.bookId === mb.id && !S.fey.some((x) => x.id === c.id)) { S.fey.push({ ...c, bookId: book.id }); nf++; }
+  if (nf) await saveFey();
   return n;
 }
 
@@ -517,8 +521,10 @@ function renderLibrary() {
   $('#hello').textContent = hr < 6 ? 'Buenas noches' : hr < 12 ? 'Buenos días' : hr < 20 ? 'Buenas tardes' : 'Buenas noches';
   $('#libBooks').hidden = S.libTab !== 'books';
   $('#hlAll').hidden = S.libTab !== 'hls';
+  $('#feyAll').hidden = S.libTab !== 'fey';
   document.querySelectorAll('#libnav button').forEach((b) => b.classList.toggle('on', b.dataset.t === S.libTab));
   if (S.libTab === 'hls') return renderAllHl();
+  if (S.libTab === 'fey') return renderFeyAll();
   const { tag, fmt, q, folder } = S.lib;
   const root = folder === 'all' && !q;
   if (root && S.selMode) { S.selMode = false; S.sel.clear(); updateSelBar(); }
@@ -845,6 +851,7 @@ function onScroll(view) {
   book.progress = view.kind === 'pdf' || view.paged ? view.ratio_ !== undefined ? view.ratio() : view.page() / Math.max(view.secs.length - 1, 1) : view.ratio();
   book.lastRead = Date.now();
   lastAct = Date.now();
+  track(view);
   if (book.progress >= 0.985 && !book.done) { book.done = true; toast(`¡Terminaste “${book.title}”!`, { ms: 4000 }); }
   clearTimeout(S.saveT[book.id]);
   S.saveT[book.id] = setTimeout(() => DB.putBook(book), 1200);
@@ -1001,6 +1008,8 @@ function renderCfg(box, v) {
     h('button', { class: settings.color === i ? 'on' : '', 'aria-label': HL_NAMES[i], onclick: () => apply({ color: i }) }, h('i', { style: `display:block;height:18px;border-radius:9px;background:${c}` })))));
   kids.push(h('div', { class: 'row2' }, h('div', {}, h('div', {}, 'Mostrar barra inferior'), h('div', { class: 'sub' }, 'Progreso y herramientas. También con el botón ⌄ de la barra o la tecla B')),
     toggle(!settings.barHidden, () => setBarHidden(!settings.barHidden))));
+  kids.push(h('div', { class: 'row2' }, h('div', {}, h('div', {}, 'Pomodoro y Feynman'), h('div', { class: 'sub' }, `${pc().w} min de enfoque · ${pc().s} de descanso · pausa Feynman ${settings.feynman ? 'activada' : 'apagada'}`)),
+    h('button', { class: 'btn ghost', onclick: pomoConfig }, 'Configurar')));
   kids.push(h('div', { class: 'row2' }, h('div', {}, h('div', {}, 'Voz de lectura'), h('div', { class: 'sub' }, settings.ttsVoiceLabel || 'Automática · varias en español latino')),
     h('button', { class: 'btn ghost', onclick: voicePicker }, 'Elegir voz')));
   kids.push(h('div', { class: 'row2' }, h('div', {}, h('div', {}, 'Pasar página tocando los bordes'), h('div', { class: 'sub' }, 'Toca el borde izquierdo o derecho para retroceder o avanzar. En laptop: flechas ← → o espacio')),
@@ -1064,6 +1073,8 @@ async function importBackup(file) {
       if (S.hl.has(bid)) S.hl.get(bid).push(rec);
       added++;
     }
+    for (const c of data.fey || []) { const bid = map.get(c.bookId); if (bid && !S.fey.some((x) => x.id === c.id)) S.fey.push({ ...c, bookId: bid }); }
+    saveFey();
     for (const bid of map.values()) { const v = S.views.get(bid); if (v) { S.hl.delete(bid); S.hlLoaded.delete(bid); await loadHl(bid); v.applyAll(); } }
     toast(`${added} subrayados importados${skipped ? ` · ${skipped} sin su documento (súbelo primero)` : ''}`, { ms: 5000 });
     renderLibrary();
@@ -1260,40 +1271,260 @@ function renderStats() {
   const st = streak();
   box.innerHTML = `<div class="stats"><div class="ring" style="--p:${Math.min(today / (settings.goal * 60), 1) * 100}"><span>${Math.round(today / 60)}</span></div>
     <div><div class="eyebrow">Lectura de hoy</div><div><b>${fmtMin(today)}</b> de ${settings.goal} min${st ? ` · racha de <b>${st} ${st === 1 ? 'día' : 'días'}</b>` : ''}</div>
-    <div class="sub">Esta semana: ${fmtMin(weekSecs())}</div></div></div>`;
+    <div class="sub">Esta semana: ${fmtMin(weekSecs())} · ${(S.stats.pomos || {})[dayKey()] || 0} pomodoros hoy${S.fey.filter((c) => c.due <= Date.now()).length ? ` · ${S.fey.filter((c) => c.due <= Date.now()).length} tarjetas Feynman por repasar` : ''}</div></div></div>`;
 }
 
-// ---------- temporizador de estudio ----------
-function timerMenu() {
-  if (S.timer) { choose('Temporizador de estudio', [{ label: 'Detener temporizador', value: 'stop', danger: true }]).then((x) => x && stopTimer()); return; }
-  choose('Temporizador de estudio', [15, 25, 45, 60].map((m) => ({ label: `${m} minutos`, sub: m === 25 ? 'Pomodoro clásico' : null, value: m }))).then((m) => m && startTimer(m));
+// ---------- Pomodoro + método Feynman ----------
+const PHASE = { work: 'Enfoque', short: 'Descanso', long: 'Descanso largo' };
+const pc = () => ({ w: settings.pomoWork || 25, s: settings.pomoShort || 5, l: settings.pomoLong || 15, n: settings.pomoEvery || 4 });
+
+// Qué parte del documento se leyó durante el bloque (para la pausa Feynman).
+function track(view) {
+  const t = (view.trk ||= { top: Infinity, bottom: -1, p0: Infinity, p1: -1 });
+  if (view.kind === 'flow') { const top = view.el.scrollTop; t.top = Math.min(t.top, top); t.bottom = Math.max(t.bottom, top + view.el.clientHeight); }
+  if (view.paged || view.kind === 'pdf') { const p = view.page(); t.p0 = Math.min(t.p0, p); t.p1 = Math.max(t.p1, p); }
 }
-function startTimer(min) {
-  S.timer = { end: Date.now() + min * 60000, min };
+function startTrack(view) {
+  if (!view) return;
+  view.trk = null;
+  view.trkPos = { ...view.getPos(), m: viewMode(view) };
+  track(view);
+}
+async function captureRead(v) {
+  if (!v.trk) track(v);
+  const t = v.trk;
+  let text = '', label = '';
+  if (v.kind === 'pdf') {
+    const texts = await pdfTexts(v.book, v.pdf);
+    const a = Math.min(t.p0, t.p1), b = Math.max(t.p0, t.p1);
+    text = texts.slice(a, b + 1).map((p) => p.join(' ')).join('\n');
+    label = a === b ? `pág. ${a + 1}` : `págs. ${a + 1}–${b + 1}`;
+  } else {
+    const base = v.el.scrollTop - v.el.getBoundingClientRect().top;
+    const parts = [];
+    for (const el of v.el.querySelectorAll('.doc p, .doc li, .doc h1, .doc h2, .doc h3, .doc blockquote')) {
+      const r = el.getBoundingClientRect();
+      const top = r.top + base;
+      if (top + r.height < t.top || top > t.bottom) continue;
+      const tx = el.textContent.trim();
+      if (tx) parts.push(tx);
+    }
+    text = parts.join('\n');
+    const sh = v.el.scrollHeight || 1;
+    label = v.paged ? (t.p0 === t.p1 ? `pág. ${t.p0 + 1}` : `págs. ${t.p0 + 1}–${t.p1 + 1}`) : `${Math.round(t.top / sh * 100)}–${Math.round(Math.min(t.bottom, sh) / sh * 100)} %`;
+  }
+  return { text: text.slice(0, 12000), label, pos: v.trkPos || null };
+}
+
+const STOP = new Set(('para como pero sobre entre cuando desde hasta durante porque también donde quien cada tiene tienen puede pueden debe deben forma tipo parte esto estos estas estar según segun sido solo sólo mismo misma mismos otras otros otra además ademas cual cuales cuyo cuya aquel aquella aquellos desde hacia contra ante bajo tras través hecho hechos hace hacer manera cuando entonces luego donde siempre nunca todos todas todo toda mucho muchos poco pocos algún alguna algunos algunas ningún ninguna serán sería serian será están estaba estaban fueron fuera esté ellos ellas nosotros vosotros usted ustedes artículo articulo').split(' ').map((w) => fold(w)));
+const WORD = /[A-Za-zÁÉÍÓÚÑÜáéíóúñü]{5,}/g;
+function keyTerms(text, hlTexts) {
+  const score = new Map();
+  const add = (w, n) => {
+    const f = fold(w);
+    if (STOP.has(f) || /(ian|aban|ando|iendo|mente|aron|ieron|aria|eria|amos|emos)$/.test(f)) return;
+    const cur = score.get(f);
+    score.set(f, { w: cur?.w || w.toLowerCase(), n: (cur?.n || 0) + n });
+  };
+  for (const w of text.match(WORD) || []) add(w, 1);
+  for (const t of hlTexts) for (const w of t.match(WORD) || []) add(w, 3);
+  return [...score.values()].filter((x) => x.n >= 2).sort((a, b) => b.n - a.n).slice(0, 10).map((x) => x.w);
+}
+const stemOf = (w) => { const f = fold(w); return f.slice(0, Math.min(6, f.length)); };
+function coverage(terms, explanation) {
+  const toks = (explanation.match(/[A-Za-zÁÉÍÓÚÑÜáéíóúñü]{4,}/g) || []).map(fold);
+  return terms.map((t) => ({ t, ok: toks.some((x) => x.startsWith(stemOf(t))) }));
+}
+const SRS_DAYS = [1, 3, 7, 14, 30, 60];
+const saveFey = () => DB.kvSet('fey', S.fey);
+
+async function openFeynman(opts = {}) {
+  const v = opts.cap ? null : activeView();
+  const book = opts.book || v?.book;
+  let cap = opts.cap;
+  if (!cap) {
+    if (!v) { toast('Abre un documento para hacer la pausa Feynman'); return null; }
+    cap = await captureRead(v);
+    if (cap.text.replace(/\s/g, '').length < 120) {
+      toast(opts.auto ? 'Casi no leíste en este bloque: sigue con el descanso' : 'Lee un poco más y vuelve a intentarlo: aún no hay texto suficiente', { ms: 4000 });
+      return null;
+    }
+  }
+  const norm = cap.text.replace(/\s+/g, ' ');
+  const hlTexts = hlList(book.id).filter((x) => norm.includes(x.text.slice(0, 25))).map((x) => x.text);
+  const terms = keyTerms(norm, hlTexts);
+  const prev = opts.card;
+  return modal((box, close) => {
+    box.classList.add('fey');
+    const gaps = new Set(prev?.gaps || []);
+    let analyzed = false;
+    const ta = h('textarea', { class: 'fe-ta', placeholder: 'Con mis palabras: ¿qué es, cómo funciona y por qué importa? Sin mirar el texto…' });
+    ta.value = prev?.text || '';
+    const analogy = h('textarea', { class: 'fe-ta small', placeholder: 'Una analogía o ejemplo cotidiano que lo haga obvio (opcional)…' });
+    analogy.value = prev?.analogy || '';
+    const an = h('div', { class: 'fe-an' });
+    an.hidden = true;
+    const gapIn = h('input', { class: 'sbox', placeholder: 'Agregar otra laguna y Enter' });
+    const paint = () => {
+      const cov = coverage(terms, ta.value);
+      const ok = cov.filter((x) => x.ok).length;
+      an.replaceChildren(
+        h('div', { class: 'fe-sum2' }, terms.length ? `Tu explicación cubre ${ok} de ${cov.length} conceptos clave del bloque.` : 'No encontré conceptos repetidos en este bloque; revisa tú mismo contra el texto.'),
+        h('div', { class: 'chips' }, ...cov.map((x) => h('button', { class: 'chip ' + (x.ok ? 'fe-ok' : 'fe-miss') + (gaps.has(x.t) ? ' on' : ''), title: 'Tocar para marcar o quitar como laguna', onclick: () => { if (gaps.has(x.t)) gaps.delete(x.t); else gaps.add(x.t); paint(); } }, `${x.ok ? '✓' : '✗'} ${x.t}`))),
+        h('div', { class: 'lbl' }, `Lagunas por reforzar · ${gaps.size}`),
+        h('div', { class: 'chips' }, ...[...gaps].map((g) => h('button', { class: 'chip fe-gap', onclick: () => { gaps.delete(g); paint(); } }, `${g} ×`))),
+        gapIn,
+        h('details', { class: 'fe-src' }, h('summary', {}, `Ver lo que leíste (${cap.label})`), h('p', {}, norm.slice(0, 2500) + (norm.length > 2500 ? '…' : ''))));
+    };
+    gapIn.addEventListener('keydown', (e) => { if (e.key === 'Enter' && gapIn.value.trim()) { gaps.add(gapIn.value.trim()); gapIn.value = ''; paint(); gapIn.focus(); } });
+    const compare = () => {
+      if (ta.value.trim().length < 15) { toast('Escribe primero tu explicación (aunque sea corta)'); return false; }
+      if (!analyzed) for (const x of coverage(terms, ta.value)) if (!x.ok) gaps.add(x.t);
+      analyzed = true;
+      an.hidden = false;
+      paint();
+      return true;
+    };
+    const save = async (reread) => {
+      if (!analyzed && !compare()) return;
+      const total = terms.length, covered = coverage(terms, ta.value).filter((x) => x.ok).length;
+      const card = prev || { id: DB.uid(), bookId: book.id, ts: Date.now(), label: cap.label, pos: cap.pos, excerpt: norm.slice(0, 3000), level: 0 };
+      Object.assign(card, { text: ta.value.trim(), analogy: analogy.value.trim(), gaps: [...gaps], terms, covered, total, last: Date.now(), due: Date.now() + 864e5, fixed: (prev?.fixed || []).filter((g) => gaps.has(g)) });
+      if (!prev) S.fey.push(card);
+      await saveFey();
+      if (v) { v.trk = null; }
+      close('saved');
+      toast(gaps.size ? `Tarjeta guardada · ${gaps.size} ${gaps.size === 1 ? 'laguna' : 'lagunas'} para repasar` : '¡Lo explicaste completo! Tarjeta guardada', { ms: 4500 });
+      if (S.libTab === 'fey') renderFeyAll();
+      if (reread && cap.pos && v) { gotoMark(v, { pos: cap.pos }); setTimeout(renderBar, 80); }
+    };
+    if (prev) { analyzed = true; an.hidden = false; paint(); }
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    let rec = null;
+    const mic = SR ? h('button', { class: 'chip', onclick: () => {
+      if (rec) { rec.stop(); return; }
+      rec = new SR();
+      rec.lang = 'es-419'; rec.continuous = true; rec.interimResults = false;
+      rec.onresult = (e) => { for (let i = e.resultIndex; i < e.results.length; i++) if (e.results[i].isFinal) ta.value += (ta.value && !/\s$/.test(ta.value) ? ' ' : '') + e.results[i][0].transcript.trim() + ' '; };
+      rec.onend = () => { rec = null; mic.classList.remove('on'); mic.textContent = '🎙 Dictar'; };
+      rec.onerror = () => toast('No se pudo usar el micrófono');
+      mic.classList.add('on'); mic.textContent = '■ Detener';
+      rec.start();
+    } }, '🎙 Dictar') : null;
+    box.append(
+      h('h3', {}, opts.card ? 'Reexplicar' : opts.auto ? 'Pausa Feynman' : 'Explícalo con tus palabras'),
+      h('div', { class: 'sub fe-intro' }, `${book.title} · ${cap.label}. Aparta el texto: explícaselo a alguien de 10 años, sin jerga. Donde te trabes, ahí está la laguna.`),
+      ta,
+      h('div', { class: 'fe-row' }, mic, h('button', { class: 'btn ghost', onclick: compare }, 'Comparar con el texto')),
+      an,
+      h('div', { class: 'lbl' }, 'Analogía'),
+      analogy,
+      h('div', { class: 'acts' },
+        h('button', { class: 'btn ghost', onclick: () => { rec?.stop(); close('skip'); } }, opts.auto ? 'Saltar al descanso' : 'Cancelar'),
+        cap.pos && v ? h('button', { class: 'btn ghost', onclick: () => save(true) }, 'Guardar y releer') : null,
+        h('button', { class: 'btn', onclick: () => save(false) }, opts.auto ? 'Guardar y descansar' : 'Guardar')));
+    setTimeout(() => ta.focus(), 100);
+  });
+}
+
+function pomoConfig() {
+  modal((box, close) => {
+    const num = (label, key, min, max) => {
+      const i = h('input', { type: 'number', min, max, inputmode: 'numeric' });
+      i.value = settings[key];
+      i.onchange = () => { saveSettings({ [key]: Math.min(max, Math.max(min, parseInt(i.value, 10) || settings[key])) }); i.value = settings[key]; };
+      return h('label', { class: 'cfg-n' }, h('span', {}, label), i);
+    };
+    const tg = (label, sub, key) => {
+      const b = h('button', { class: 'toggle' + (settings[key] ? ' on' : ''), role: 'switch', onclick: () => { saveSettings({ [key]: !settings[key] }); b.classList.toggle('on', settings[key]); } });
+      return h('div', { class: 'row2' }, h('div', {}, h('div', {}, label), h('div', { class: 'sub' }, sub)), b);
+    };
+    box.append(h('h3', {}, 'Pomodoro y Feynman'),
+      num('Enfoque (minutos)', 'pomoWork', 5, 120), num('Descanso corto (minutos)', 'pomoShort', 1, 30),
+      num('Descanso largo (minutos)', 'pomoLong', 5, 60), num('Descanso largo cada (pomodoros)', 'pomoEvery', 2, 8),
+      tg('Pausa Feynman al terminar cada bloque', 'Explicas con tus palabras antes de descansar', 'feynman'),
+      tg('Empezar el siguiente pomodoro solo', 'Sin tocar nada al terminar el descanso', 'pomoAuto'),
+      h('div', { class: 'acts' }, h('button', { class: 'btn', onclick: () => close(null) }, 'Listo')));
+  });
+}
+
+function timerMenu() {
+  if (S.timer) {
+    const t = S.timer;
+    choose(`${PHASE[t.phase]} en curso`, [
+      t.phase === 'work' ? { label: 'Terminar el bloque y hacer Feynman', sub: 'Explica lo que llevas leído', value: 'finish' } : { label: 'Saltar el descanso', value: 'skip' },
+      { label: 'Detener todo', value: 'stop', danger: true }]).then((x) => {
+      if (x === 'finish') endWork(); else if (x === 'skip') endBreak(true); else if (x === 'stop') { stopTimer(); S.pomoCycle = 0; }
+    });
+    return;
+  }
+  const c = pc();
+  choose('Estudiar', [
+    { label: `Pomodoro ${c.w} + ${c.s} min`, sub: settings.feynman ? 'Enfoque, pausa Feynman y descanso, en ciclo' : 'Enfoque y descanso, en ciclo', value: 'pomo' },
+    { label: 'Un solo bloque…', sub: 'Sin ciclo: 15, 25, 45 o 60 min', value: 'single' },
+    { label: 'Pausa Feynman ahora', sub: 'Explica con tus palabras lo que acabas de leer', value: 'fey' },
+    { label: 'Configurar Pomodoro y Feynman', value: 'cfg' }]).then(async (x) => {
+    if (x === 'pomo') { S.pomoCycle = 0; startWork(c.w, false); }
+    else if (x === 'single') { const m = await choose('Duración del bloque', [15, 25, 45, 60].map((m) => ({ label: `${m} minutos`, value: m }))); if (m) startWork(m, true); }
+    else if (x === 'fey') openFeynman();
+    else if (x === 'cfg') pomoConfig();
+  });
+}
+function startWork(min, single) {
+  S.pomoCycle = single ? 0 : (S.pomoCycle || 0) + 1;
+  S.timer = { phase: 'work', end: Date.now() + min * 60000, min, single };
+  startTrack(activeView());
   clearInterval(S.timerI);
   S.timerI = setInterval(timerTick, 1000);
   timerTick();
-  toast(`Temporizador de ${min} min en marcha`);
+  toast(single ? `Bloque de ${min} min en marcha` : `Pomodoro ${S.pomoCycle} · ${min} min de enfoque`);
 }
 function stopTimer() { clearInterval(S.timerI); S.timer = null; timerTick(); }
+async function endWork() {
+  const t = S.timer;
+  if (!t) return;
+  stopTimer();
+  chime();
+  navigator.vibrate?.([300, 150, 300, 150, 300]);
+  S.stats.pomos ||= {};
+  const k = dayKey();
+  S.stats.pomos[k] = (S.stats.pomos[k] || 0) + 1;
+  DB.kvSet('stats', S.stats);
+  if (S.screen === 'library') renderLibrary();
+  if (settings.feynman) await openFeynman({ auto: true });
+  if (t.single) { toast(`¡${t.min} minutos cumplidos!`, { ms: 4000 }); return; }
+  startBreak();
+}
+function startBreak() {
+  const c = pc();
+  const long = S.pomoCycle % c.n === 0;
+  const min = long ? c.l : c.s;
+  S.timer = { phase: long ? 'long' : 'short', end: Date.now() + min * 60000, min };
+  clearInterval(S.timerI);
+  S.timerI = setInterval(timerTick, 1000);
+  timerTick();
+  toast(`${long ? 'Descanso largo' : 'Descanso'} de ${min} min: levántate, camina, toma agua`, { ms: 5000 });
+}
+function endBreak(skip) {
+  stopTimer();
+  if (!skip) { chime(); navigator.vibrate?.([200, 100, 200]); }
+  if (settings.pomoAuto || skip) startWork(pc().w, false);
+  else toast('Descanso terminado', { sticky: true, action: { label: `Empezar pomodoro ${S.pomoCycle + 1}`, fn: () => startWork(pc().w, false) } });
+}
 function timerTick() {
   const t = S.timer;
-  const txt = $('#timerTxt'), chip = $('#focusTimer');
-  $('#timerBtn').classList.toggle('on', !!t);
+  const txt = $('#timerTxt'), chip = $('#focusTimer'), btn = $('#timerBtn');
+  btn.classList.toggle('on', !!t);
+  btn.classList.toggle('brk', !!t && t.phase !== 'work');
   if (!t) { txt.textContent = 'Tiempo'; chip.hidden = true; return; }
   const left = Math.max(0, t.end - Date.now());
   const s = Math.ceil(left / 1000);
   const lab = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
   txt.textContent = lab;
-  chip.textContent = lab;
+  chip.textContent = `${t.phase === 'work' ? '' : PHASE[t.phase] + ' '}${lab}`;
   chip.hidden = false;
-  if (left <= 0) {
-    const min = t.min;
-    stopTimer();
-    chime();
-    navigator.vibrate?.([300, 150, 300, 150, 300]);
-    toast(`¡${min} minutos cumplidos! Descansa 5 minutos`, { sticky: true, action: { label: 'Otro bloque', fn: () => startTimer(min) } });
-  }
+  chip.classList.toggle('brk', t.phase !== 'work');
+  if (left <= 0) { if (t.phase === 'work') endWork(); else endBreak(false); }
 }
 function chime() {
   try {
@@ -1309,6 +1540,39 @@ function chime() {
       o.stop(ac.currentTime + d + 0.65);
     });
   } catch { /* sin audio */ }
+}
+
+// ---------- tarjetas Feynman (repaso espaciado) ----------
+const fmtDay = (ts) => new Date(ts).toLocaleDateString('es', { day: 'numeric', month: 'short' });
+function feyCard(c) {
+  const b = bookById(c.bookId);
+  const due = c.due <= Date.now();
+  const txt = h('div', { class: 'fc-text' }, c.text);
+  txt.onclick = () => txt.classList.toggle('open');
+  const fixed = new Set(c.fixed || []);
+  return h('div', { class: 'fcard' + (due ? ' due' : '') },
+    h('div', { class: 'fc-head' }, h('b', {}, b ? b.title : 'Documento eliminado'), h('span', { class: 'sub' }, `${c.label} · ${fmtDay(c.ts)}`), due ? h('span', { class: 'fc-badge' }, 'Repasar hoy') : h('span', { class: 'sub' }, `próximo ${fmtDay(c.due)}`)),
+    txt,
+    c.analogy ? h('div', { class: 'fc-an' }, '≈ ' + c.analogy) : null,
+    c.gaps?.length ? h('div', { class: 'chips' }, ...c.gaps.map((g) => h('button', { class: 'chip fe-gap' + (fixed.has(g) ? ' fixed' : ''), title: 'Tocar si ya lo dominas', onclick: async () => { if (fixed.has(g)) fixed.delete(g); else fixed.add(g); c.fixed = [...fixed]; await saveFey(); renderFeyAll(); } }, g))) : h('div', { class: 'sub' }, 'Sin lagunas'),
+    h('div', { class: 'fc-acts' },
+      b && c.pos ? h('button', { class: 'btn ghost', onclick: async () => { await openBook(b.id); const v = S.views.get(b.id); if (v) gotoMark(v, { pos: c.pos }); } }, 'Releer') : null,
+      b ? h('button', { class: 'btn ghost', onclick: () => openFeynman({ cap: { text: c.excerpt, label: c.label, pos: c.pos }, book: b, card: c }).then(() => renderFeyAll()) }, 'Reexplicar') : null,
+      h('button', { class: 'btn', onclick: async () => { c.level = Math.min((c.level || 0) + 1, SRS_DAYS.length - 1); c.due = Date.now() + SRS_DAYS[c.level] * 864e5; await saveFey(); renderFeyAll(); toast(`Bien: lo repasas de nuevo en ${SRS_DAYS[c.level]} días`); } }, 'Lo sé'),
+      h('button', { class: 'btn ghost', onclick: async () => { c.level = 0; c.due = Date.now() + 864e5; await saveFey(); renderFeyAll(); toast('Anotado: mañana lo repasas otra vez'); } }, 'Me cuesta'),
+      h('button', { class: 'ib', 'aria-label': 'Borrar tarjeta', html: I.trash, onclick: async () => { if (await choose('¿Borrar esta tarjeta?', [{ label: 'Sí, borrar', value: true, danger: true }])) { S.fey = S.fey.filter((x) => x !== c); await saveFey(); renderFeyAll(); } } })));
+}
+function renderFeyAll() {
+  const box = $('#feyAll');
+  const cards = S.fey.slice().sort((a, b) => a.due - b.due);
+  if (!cards.length) {
+    box.innerHTML = '<div class="empty"><b>Aún no hay tarjetas Feynman</b>Al terminar un bloque Pomodoro (o con el botón Feynman mientras lees) explicas con tus palabras lo que aprendiste. Aquí quedan tus explicaciones y lagunas para repasarlas.</div>';
+    return;
+  }
+  const dueN = cards.filter((c) => c.due <= Date.now()).length;
+  box.replaceChildren(
+    h('div', { class: 'fe-top' }, h('b', {}, dueN ? `${dueN} ${dueN === 1 ? 'tarjeta' : 'tarjetas'} para repasar hoy` : 'Todo al día'), h('span', { class: 'sub' }, `${cards.length} en total · ${S.fey.reduce((a, c) => a + (c.gaps || []).filter((g) => !(c.fixed || []).includes(g)).length, 0)} lagunas abiertas`)),
+    ...cards.map(feyCard));
 }
 
 // ---------- repaso de subrayados (tarjetas) ----------
@@ -1567,6 +1831,7 @@ export async function start() {
           <input id="q" type="search" placeholder="Buscar en la biblioteca" aria-label="Buscar en la biblioteca"></div>
         <div id="libBooks"><div id="stats"></div><div id="cont"></div><div class="chips" id="folderChips"></div><div id="folderHead"></div><div class="chips" id="tagChips"></div><div class="chips" id="fmtChips"></div><div id="grid"></div></div>
         <div id="hlAll" hidden></div>
+        <div id="feyAll" hidden></div>
       </section>
       <section id="viewer" hidden><div id="views"></div></section>
       <button id="fab">${I.plus} Añadir documentos</button>
@@ -1595,9 +1860,10 @@ export async function start() {
       <button id="focusBtn" aria-label="Pantalla completa">${I.expand}Completa</button>
       <button id="ttsBtn" aria-label="Leer en voz alta">${I.voice}Voz</button>
       <button id="timerBtn" aria-label="Temporizador de estudio">${I.timer}<span id="timerTxt">Tiempo</span></button>
+      <button id="feyBtn" aria-label="Pausa Feynman">${I.bulb}Feynman</button>
     </div>
   </footer>
-  <nav id="libnav"><button data-t="books" class="on">Biblioteca</button><button data-t="hls">Subrayados</button></nav>
+  <nav id="libnav"><button data-t="books" class="on">Biblioteca</button><button data-t="hls">Subrayados</button><button data-t="fey">Feynman</button></nav>
 </div>
 <input type="file" id="file" multiple hidden accept=".pdf,.docx,.epub,.txt,.md,.html,.htm,application/pdf">
 <input type="file" id="bk" hidden accept=".json,application/json">
@@ -1607,6 +1873,7 @@ export async function start() {
   S.books = await DB.allBooks();
   S.folders = (await DB.kvGet('folders').catch(() => null)) || [];
   S.stats = (await DB.kvGet('stats').catch(() => null)) || { days: {}, books: {} };
+  S.fey = (await DB.kvGet('fey').catch(() => null)) || [];
   setInterval(statsTick, 30000);
   DB.persist();
   DB.onWrite(scheduleMirror);
@@ -1696,6 +1963,7 @@ export async function start() {
     else if (b.id === 'bmBtn') toggleBookmark();
     else if (b.id === 'ttsBtn') toggleTts();
     else if (b.id === 'timerBtn') timerMenu();
+    else if (b.id === 'feyBtn') openFeynman();
     else if (b.id === 'markBtn') { saveSettings({ auto: !settings.auto }); toast(settings.auto ? 'Marcador automático activado' : 'Marcador automático apagado'); renderBar(); }
   };
   $('#seek').oninput = (e) => { const v = activeView(); if (v) v.seek(e.target.value / 1000); };

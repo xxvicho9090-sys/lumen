@@ -331,3 +331,37 @@ body.nobar #bar{display:none}
 body.nobar #barShow:not([hidden]){display:grid}
 body.focus #barShow{display:none!important}
 #barShow:hover,#barShow:active,#barShow:focus-visible{opacity:1}
+
+/* Pomodoro + Feynman */
+#timerBtn.brk{color:#7FB7A4}
+#focusTimer.brk{background:rgba(70,130,110,.75)}
+#modal .box.fey{width:min(680px,100%);max-height:92vh;overflow-y:auto}
+.fe-intro{margin:-6px 0 12px;line-height:1.5}
+.fe-ta{min-height:140px!important}
+.fe-ta.small{min-height:70px!important}
+.fe-row{display:flex;gap:8px;align-items:center;margin:10px 0}
+.fe-an{margin:6px 0 10px;padding:14px;background:var(--bg);border:1px solid var(--line);border-radius:16px}
+.fe-sum2{font-weight:600;margin-bottom:10px;line-height:1.4}
+.chip.fe-ok{border-color:#7FB7A4;color:#7FB7A4}
+.chip.fe-miss{border-color:#E8836B;color:#E8836B}
+.chip.fe-ok.on,.chip.fe-miss.on{background:color-mix(in srgb,currentColor 20%,transparent);font-weight:700}
+.chip.fe-gap{border-color:#E8836B;color:var(--ink)}
+.chip.fe-gap.fixed{text-decoration:line-through;opacity:.5}
+.fe-src{margin-top:10px;font-size:14px;color:var(--mut)}
+.fe-src p{margin:8px 0 0;line-height:1.55}
+.cfg-n{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}
+.cfg-n input{width:84px;text-align:center;min-height:42px!important;padding:6px!important}
+#feyAll{max-width:760px}
+.fe-top{display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.fe-top b{font:600 20px var(--disp)}
+.fcard{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:14px 16px;margin-bottom:12px}
+.fcard.due{border-color:var(--acc)}
+.fc-head{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin-bottom:8px}
+.fc-head b{font:600 16px var(--disp)}
+.fc-badge{margin-left:auto;background:var(--acc);color:var(--onacc);font:700 11px var(--ui);padding:3px 9px;border-radius:99px}
+.fc-text{font:15px/1.55 var(--disp);display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;cursor:pointer;white-space:pre-wrap}
+.fc-text.open{-webkit-line-clamp:unset;display:block}
+.fc-an{margin:8px 0;color:var(--mut);font-style:italic;font-size:14px}
+.fcard .chips{margin:8px 0}
+.fc-acts{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center}
+.fc-acts .btn{padding:9px 14px}

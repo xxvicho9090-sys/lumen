@@ -9,7 +9,7 @@ export const HL_COLORS = ['#F5C25B', '#7FB7A4', '#E8836B', '#B9A6E8'];
 export const HL_NAMES = ['Ámbar', 'Menta', 'Coral', 'Violeta'];
 const THEME_BAR = { papel: '#F6F1E7', sepia: '#E9D9B8', noche: '#14110D', oled: '#000000' };
 
-export const settings = { theme: 'noche', size: 19, font: 'serif', lh: 1.7, width: 'medio', pdfMode: 'page', pdfZoom: 1, color: 0, auto: false, tapTurn: true, sort: 'recent', goal: 30, ttsRate: 1, ttsVoice: '', ttsVoiceLabel: '', barHidden: false };
+export const settings = { theme: 'noche', size: 19, font: 'serif', lh: 1.7, width: 'medio', pdfMode: 'page', pdfZoom: 1, color: 0, auto: false, tapTurn: true, sort: 'recent', goal: 30, ttsRate: 1, ttsVoice: '', ttsVoiceLabel: '', barHidden: false, pomoWork: 25, pomoShort: 5, pomoLong: 15, pomoEvery: 4, feynman: true, pomoAuto: false };
 try { Object.assign(settings, JSON.parse(localStorage.getItem(KEY) || '{}')); } catch { /* sin almacenamiento */ }
 
 // "Automático" sigue el modo claro/oscuro del sistema.
