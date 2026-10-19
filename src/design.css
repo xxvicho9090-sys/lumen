@@ -36,7 +36,7 @@
 :root[data-theme=dia]{
   --bg:#F4F6FA;--s1:#FFFFFF;--s2:#F0F3F8;--s3:#E4E9F1;
   --line:rgba(15,27,45,.10);--line2:rgba(15,27,45,.18);
-  --tx:#0F1B2D;--tx2:#4B566B;--tx3:#667287;
+  --tx:#0F1B2D;--tx2:#4B566B;--tx3:#5C687D;
   --acc:#F4B740;--acct:#9A5A00;--accink:#1C1404;--accsoft:rgba(244,183,64,.2);
   --viewbg:#E6EAF2;--selbg:rgba(244,183,64,.4);--scrim:rgba(15,27,45,.38);
   --sh1:0 1px 2px rgba(15,27,45,.08);
@@ -46,7 +46,7 @@
 :root[data-theme=papel]{
   --bg:#F6F1E7;--s1:#FBF8F1;--s2:#EFE8D9;--s3:#E6DDCA;
   --line:rgba(42,33,24,.11);--line2:rgba(42,33,24,.2);
-  --tx:#2A2118;--tx2:#5E5242;--tx3:#7C705F;
+  --tx:#2A2118;--tx2:#5E5242;--tx3:#6F6453;
   --acc:#F0B13A;--acct:#8F5300;--accink:#1F1403;--accsoft:rgba(240,177,58,.22);
   --viewbg:#EAE2D0;--paper:#F6F1E7;--selbg:rgba(240,177,58,.42);--scrim:rgba(42,33,24,.4);
   --sh1:0 1px 2px rgba(42,33,24,.08);
@@ -56,7 +56,7 @@
 :root[data-theme=sepia]{
   --bg:#E9D9B8;--s1:#F1E4C8;--s2:#E3D1A9;--s3:#D8C497;
   --line:rgba(59,45,22,.14);--line2:rgba(59,45,22,.24);
-  --tx:#3B2D16;--tx2:#68562F;--tx3:#80704B;
+  --tx:#3B2D16;--tx2:#68562F;--tx3:#6B5C3A;
   --acc:#E8A93A;--acct:#7A4308;--accink:#1F1403;--accsoft:rgba(232,169,58,.26);
   --viewbg:#DAC8A0;--paper:#E9D9B8;--selbg:rgba(232,169,58,.5);--scrim:rgba(59,45,22,.42);
   --sh1:0 1px 2px rgba(59,45,22,.1);
@@ -545,3 +545,14 @@ button.tile:hover{box-shadow:inset 0 0 0 1px var(--acc)}
 .seg{overflow-x:auto;scrollbar-width:none}
 .seg::-webkit-scrollbar{display:none}
 .seg button{padding:8px 10px;white-space:nowrap}
+
+/* markdown y bloques de código */
+.doc pre{overflow-x:auto;background:var(--s1);box-shadow:inset 0 0 0 1px var(--line);padding:12px 14px;border-radius:var(--r2);font-size:.82em;line-height:1.5}
+.doc code{font-family:ui-monospace,'Cascadia Code',Consolas,monospace;font-size:.88em}
+.doc :not(pre)>code{background:var(--s2);padding:1px 5px;border-radius:5px}
+.doc hr{border:0;border-top:1px solid var(--line2);margin:1.6em 0}
+.doc ul,.doc ol{padding-left:1.4em;margin:0 0 .95em}
+.doc li{margin:.25em 0}
+
+.textLayer .endOfContent{display:block;position:absolute;inset:100% 0 0;z-index:0;cursor:default;user-select:none;-webkit-user-select:none}
+.textLayer.selecting .endOfContent{top:0}

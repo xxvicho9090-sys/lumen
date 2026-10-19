@@ -28,17 +28,19 @@ public class TtsPlugin extends Plugin {
     public void load() {
         tts = new TextToSpeech(getContext(), (status) -> {
             ready = status == TextToSpeech.SUCCESS;
-            if (ready) tts.setLanguage(Locale.forLanguageTag("es"));
-        });
-        tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
-            @Override public void onStart(String id) {}
-            @Override public void onDone(String id) { finish(id, false); }
-            @Override public void onError(String id) {
-                PluginCall c;
-                synchronized (pending) { c = pending.remove(id); }
-                if (c != null) c.reject("No se pudo leer en voz alta");
-            }
-            @Override public void onStop(String id, boolean interrupted) { finish(id, true); }
+            if (!ready) return;
+            tts.setLanguage(Locale.forLanguageTag("es"));
+            // El listener se registra con el motor ya inicializado (antes puede rechazarse).
+            tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                @Override public void onStart(String id) {}
+                @Override public void onDone(String id) { finish(id, false); }
+                @Override public void onError(String id) {
+                    PluginCall c;
+                    synchronized (pending) { c = pending.remove(id); }
+                    if (c != null) c.reject("No se pudo leer en voz alta");
+                }
+                @Override public void onStop(String id, boolean interrupted) { finish(id, true); }
+            });
         });
     }
 

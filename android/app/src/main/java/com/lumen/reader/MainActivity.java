@@ -57,7 +57,7 @@ public class MainActivity extends BridgeActivity {
             String name = displayName(uri);
             File dir = new File(getCacheDir(), "incoming");
             dir.mkdirs();
-            File out = new File(dir, name);
+            File out = new File(dir, System.nanoTime() + "_" + name);
             try (InputStream in = getContentResolver().openInputStream(uri);
                  OutputStream os = new FileOutputStream(out)) {
                 if (in == null) return;

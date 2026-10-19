@@ -2,6 +2,7 @@ import { Capacitor, SystemBars, registerPlugin } from '@capacitor/core';
 import { App as CapApp } from '@capacitor/app';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
+import { LocalNotifications } from '@capacitor/local-notifications';
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
 import * as DB from './db.js';
@@ -30,6 +31,7 @@ const h = (tag, props = {}, ...kids) => {
 const PALETTE = ['#E9B96E', '#C9D3F5', '#F0B5C0', '#A8DCC4', '#B5C7F2', '#E6C9A8'];
 const FMT = { pdf: 'PDF', docx: 'WORD', epub: 'EPUB', txt: 'TXT' };
 const TAGS = { estudio: 'Estudio', lectura: 'Lectura' };
+const vibrate = (p) => { try { if (navigator.userActivation?.hasBeenActive !== false) navigator.vibrate?.(p); } catch { /* sin vibración */ } };
 const hash = (s) => [...s].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7);
 const wide = () => innerWidth >= 900;
 
@@ -268,13 +270,22 @@ function loading(on, txt = '') {
   $('#loadtxt').textContent = txt;
 }
 function modal(build) {
+  S.closeModal?.();
   return new Promise((res) => {
     const m = $('#modal');
     const box = h('div', { class: 'box' });
+    let done = false;
+    const self = () => close(null);
+    const close = (v) => {
+      if (done) return;
+      done = true;
+      box._onClose?.();
+      if (S.closeModal === self) { S.closeModal = null; m.hidden = true; m.replaceChildren(); }
+      res(v);
+    };
     m.replaceChildren(box);
     m.hidden = false;
-    const close = (v) => { m.hidden = true; m.replaceChildren(); S.closeModal = null; res(v); };
-    S.closeModal = () => close(null);
+    S.closeModal = self;
     m.onclick = (e) => { if (e.target === m) close(null); };
     build(box, close);
   });
@@ -339,6 +350,7 @@ async function pdfCover(pdf) {
   page.cleanup();
   return cv.toDataURL('image/jpeg', 0.72);
 }
+const isScan = (book) => { const t = S.texts.get(book.id); return !!t && t.every((p) => !p.length); };
 function pdfTexts(book, pdf) {
   if (S.texts.has(book.id)) return Promise.resolve(S.texts.get(book.id));
   if (S.textP.has(book.id)) return S.textP.get(book.id);
@@ -540,11 +552,18 @@ async function folderMenu(f) {
   if (act === 'edit') renameFolder(f); else if (act === 'del') deleteFolder(f);
 }
 
+function openFolder(id) {
+  S.libTab = 'books'; S.lib.folder = id; S.lib.q = ''; S.lib.tag = 'all'; S.lib.fmt = 'all';
+  const q = $('#q'); if (q) q.value = '';
+  renderLibrary();
+  $('#libMain').scrollTop = 0;
+}
+
 function renderSide() {
   const side = $('#libSide');
   const due = S.fey.filter((c) => c.due <= Date.now()).length;
   const onBooks = S.libTab === 'books';
-  const toBooks = (folder) => { S.libTab = 'books'; S.lib.folder = folder; S.lib.q = ''; $('#q').value = ''; renderLibrary(); $('#libMain').scrollTop = 0; };
+  const toBooks = openFolder;
   const item = (icon, label, on, fn, badge) => h('button', { class: 'side-i' + (on ? ' on' : ''), onclick: fn },
     h('span', { class: 'si-ic', html: icon }), h('span', { class: 'si-t' }, label), badge ? h('span', { class: 'si-b' }, String(badge)) : null);
   const fol = (id, name, color, n) => h('button', { class: 'side-f' + (onBooks && S.lib.folder === id && !S.lib.q ? ' on' : ''), 'data-folder': id, onclick: () => toBooks(id) },
@@ -652,7 +671,7 @@ function renderLibrary() {
   }
   const cur = S.folders.find((f) => f.id === folder);
   const scope = q ? S.books : booksIn(folder);
-  const toRoot = () => { S.lib.folder = 'all'; S.lib.q = ''; $('#q').value = ''; renderLibrary(); $('#libMain').scrollTop = 0; };
+  const toRoot = () => openFolder('all');
   head.replaceChildren(h('div', { class: 'fv-head' },
     h('button', { class: 'back', onclick: toRoot, html: `${I.chevronL}<span>Biblioteca</span>` }),
     h('div', { class: 'fv-title' }, q ? null : h('i', { class: 'dot', style: `background:${cur ? folderColor(cur) : 'var(--mut)'}` }), h('h2', {}, q ? `Resultados para “${q}”` : cur ? cur.name : 'Sin carpeta')),
@@ -726,15 +745,16 @@ async function onFiles(files, presetFolder) {
   }
   DB.persist();
   let last = null, added = 0, dup = 0, failed = 0;
+  const failNames = [];
   for (let i = 0; i < ok.length; i++) {
     toast(ok.length > 1 ? `Añadiendo ${i + 1} de ${ok.length} · ${ok[i].name}` : `Añadiendo ${ok[i].name}…`, { sticky: true });
     const r = await addFile(ok[i], tag, inFolder);
-    if (r === 'dupe') dup++; else if (r) { added++; last = r; } else failed++;
+    if (r === 'dupe') dup++; else if (r) { added++; last = r; } else { failed++; failNames.push(ok[i].name); }
     if (ok.length > 1 && i % 3 === 2) renderLibrary();
   }
   const parts = [`${added} ${added === 1 ? 'documento añadido' : 'documentos añadidos'}`];
   if (dup) parts.push(`${dup} ya estaban`);
-  if (failed) parts.push(`${failed} con error`);
+  if (failed) parts.push(`${failed} con error (${failNames.slice(0, 2).join(', ')}${failNames.length > 2 ? '…' : ''})`);
   toast(parts.join(' · '), { ms: 5000 });
   S.libTab = 'books';
   renderLibrary();
@@ -769,6 +789,9 @@ async function addFile(file, tag, folder = null) {
       book.author = meta?.info?.Author || '';
       book.cover = await pdfCover(pdf).catch(() => null);
       pdf.destroy();
+    } else if (format === 'docx') {
+      const sig = new Uint8Array(await file.slice(0, 4).arrayBuffer());
+      if (sig[0] !== 0x50 || sig[1] !== 0x4b) throw new Error('no es un .docx válido');
     } else if (format === 'epub') {
       const m = await epubMeta(file);
       if (m.title) book.title = m.title;
@@ -780,7 +803,7 @@ async function addFile(file, tag, folder = null) {
     await DB.putBook(book);
   } catch (e) {
     console.warn(e);
-    toast(`No se pudo leer “${file.name}”`);
+    toast(e?.name === 'QuotaExceededError' ? 'No hay espacio suficiente en este dispositivo para guardar el documento' : `No se pudo leer “${file.name}”${e?.message ? ': ' + e.message : ''}`, { ms: 5000 });
     return null;
   }
   S.books.push(book);
@@ -791,6 +814,13 @@ async function addFile(file, tag, folder = null) {
 async function openBook(id) {
   const book = bookById(id);
   if (!book) return;
+  S.opening ||= new Map();
+  if (S.opening.has(id)) return S.opening.get(id);
+  const run = openBookNow(id, book).finally(() => S.opening.delete(id));
+  S.opening.set(id, run);
+  return run;
+}
+async function openBookNow(id, book) {
   if (!S.views.has(id)) {
     loading(true, `Abriendo “${book.title}”…`);
     try {
@@ -899,7 +929,7 @@ function renderTabs() {
     if (!b) return null;
     const vis = S.screen === 'reader' && S.panes.includes(id);
     const foc = S.screen === 'reader' && S.panes[S.focus] === id;
-    return h('button', { class: 'tab' + (vis ? ' vis' : '') + (foc ? ' focus' : ''), role: 'tab', title: b.title, onclick: () => openBook(id) },
+    return h('button', { class: 'tab' + (vis ? ' vis' : '') + (foc ? ' focus' : ''), role: 'tab', 'aria-selected': String(foc), title: b.title, onclick: () => openBook(id) },
       h('i', { class: 'dot', style: `background:var(--c-${b.tag})` }),
       h('span', {}, b.title),
       h('span', { class: 'x', role: 'button', 'aria-label': 'Cerrar', onclick: (e) => { e.stopPropagation(); closeTab(id); } }, '×'));
@@ -912,6 +942,13 @@ function closeTab(id) {
   if (v) { flushProgress(v.book); v.destroy(); S.views.delete(id); }
   const i = S.tabs.indexOf(id);
   S.tabs = S.tabs.filter((x) => x !== id);
+  if (S.screen !== 'reader') {
+    S.panes = S.panes.filter((x) => x !== id);
+    if (S.panes.length < 2) { S.split = false; S.focus = 0; }
+    renderTabs();
+    saveSession();
+    return;
+  }
   if (S.panes.includes(id)) {
     const rest = S.tabs.filter((x) => !S.panes.includes(x));
     if (S.split && S.panes.length === 2) {
@@ -954,6 +991,7 @@ function onScroll(view) {
   view._st = setTimeout(() => { view._st = 0; scrollWork(view); }, 140);
 }
 function scrollWork(view) {
+  if (!view.el.clientHeight) return; // oculta (biblioteca): sus medidas serían cero
   const book = view.book;
   book.pos = { ...view.getPos(), m: viewMode(view) };
   book.progress = view.kind === 'pdf' || view.paged ? view.ratio_ !== undefined ? view.ratio() : view.page() / Math.max(view.secs.length - 1, 1) : view.ratio();
@@ -1049,6 +1087,7 @@ function renderPanel() {
         if (q.length < 2) { res.replaceChildren(); return; }
         res.replaceChildren(h('div', { class: 'sub' }, 'Buscando…'));
         const r = await v.search(q);
+        if (!r.length && v.kind === 'pdf' && isScan(v.book)) { res.replaceChildren(h('div', { class: 'sub' }, 'Este PDF es una imagen escaneada: no tiene texto que buscar.')); return; }
         res.replaceChildren(...(r.length ? [h('div', { class: 'sub' }, `${r.length}${r.length >= 200 ? '+' : ''} resultados`), ...r.map((x) => h('button', { class: 'li', onclick: () => { x.go(); if (!wide()) closePanel(); } }, x.snippet, x.label ? h('small', {}, x.label) : null))]
           : [h('div', { class: 'sub' }, 'Sin resultados')]));
       }, 350);
@@ -1082,6 +1121,13 @@ function exportHl(book) {
   saveText(`${book.title.replace(/[\\/:*?"<>|]/g, '').slice(0, 60)} - subrayados.md`, md);
 }
 
+function keepReadPos(fn) {
+  const v = activeView();
+  const r = v?.kind === 'flow' ? v.ratio() : null;
+  fn();
+  if (r != null) v.seek(r);
+}
+
 function renderCfg(box, v) {
   const seg = (items, cur, set) => h('div', { class: 'seg' }, ...items.map(([k, l]) => h('button', { class: cur === k ? 'on' : '', onclick: () => set(k) }, l)));
   const apply = (patch) => {
@@ -1093,15 +1139,15 @@ function renderCfg(box, v) {
     renderCfg(box, activeView());
   };
   const themes = { noche: ['Noche', '#0A0D18', '#EBEDF7'], dia: ['Día', '#F4F6FA', '#0F1B2D'], papel: ['Papel', '#F6F1E7', '#2A2118'], sepia: ['Sepia', '#E9D9B8', '#3B2D16'], oled: ['OLED', '#000', '#D8D2C4'], auto: ['Automático', 'linear-gradient(135deg,#F4F6FA 50%,#0A0D18 50%)', '#6F7694'] };
-  const slider = (min, max, step, val, fn) => { const r = h('input', { type: 'range', min, max, step }); r.value = val; r.addEventListener('input', () => fn(+r.value)); return r; };
+  const slider = (min, max, step, val, fn, label) => { const r = h('input', { type: 'range', min, max, step, 'aria-label': label }); r.value = val; r.addEventListener('input', () => fn(+r.value)); return r; };
   const kids = [h('div', { class: 'ph' }, h('h2', {}, 'Ajustes'))];
   kids.push(h('div', { class: 'lbl' }, 'Tema'),
     h('div', { class: 'themes' }, ...Object.entries(themes).map(([k, [l, bg, fg]]) => h('button', { class: 'th' + (settings.theme === k ? ' on' : ''), onclick: () => apply({ theme: k }) },
       h('i', { style: `background:${bg};color:${fg}${k === 'oled' || k === 'noche' ? ';box-shadow:inset 0 0 0 1px rgba(173,186,255,.2)' : ''}` }, 'Aa lectura'), l))));
   kids.push(h('div', { class: 'lbl' }, 'Tamaño de letra', h('b', {}, settings.size + ' px')),
-    slider(12, 44, 1, settings.size, (n) => { saveSettings({ size: n }); $('#panelBody .lbl b').textContent = n + ' px'; }));
+    slider(12, 44, 1, settings.size, (n) => { keepReadPos(() => saveSettings({ size: n })); $('#panelBody .lbl b').textContent = n + ' px'; }, 'Tamaño de letra'));
   kids.push(h('div', { class: 'lbl' }, 'Tipografía'), seg([['serif', 'Newsreader'], ['literata', 'Literata'], ['sans', 'Geist'], ['dislexia', 'Legible']], settings.font, (k) => apply({ font: k })));
-  kids.push(h('div', { class: 'lbl' }, 'Interlineado'), slider(1.3, 2.2, 0.05, settings.lh, (n) => saveSettings({ lh: n })));
+  kids.push(h('div', { class: 'lbl' }, 'Interlineado'), slider(1.3, 2.2, 0.05, settings.lh, (n) => keepReadPos(() => saveSettings({ lh: n })), 'Interlineado'));
   kids.push(h('div', { class: 'lbl' }, 'Ancho del texto'), seg([['estrecho', 'Estrecho'], ['medio', 'Medio'], ['ancho', 'Ancho']], settings.width, (k) => apply({ width: k })));
   if (v?.book.format === 'pdf') {
     const mode = v.kind === 'pdf' ? 'page' : 'text';
@@ -1110,24 +1156,24 @@ function renderCfg(box, v) {
     if (v.kind === 'pdf') {
       const zl = h('b', {}, Math.round((v.book.zoom ?? settings.pdfZoom) * 100) + ' %');
       kids.push(h('div', { class: 'lbl' }, 'Zoom de página', zl),
-        slider(0.5, 4, 0.1, v.book.zoom ?? settings.pdfZoom, (n) => { zl.textContent = Math.round(n * 100) + ' %'; clearTimeout(S.zt); S.zt = setTimeout(() => { v.book.zoom = n; DB.putBook(v.book); v.relayout(); }, 250); }));
+        slider(0.5, 4, 0.1, v.book.zoom ?? settings.pdfZoom, (n) => { zl.textContent = Math.round(n * 100) + ' %'; clearTimeout(S.zt); S.zt = setTimeout(() => { v.book.zoom = n; DB.putBook(v.book); v.relayout(); }, 250); }, 'Zoom de página'));
     }
   }
-  const toggle = (on, fn) => h('button', { class: 'toggle' + (on ? ' on' : ''), role: 'switch', 'aria-checked': String(on), onclick: fn });
+  const toggle = (on, fn, label) => h('button', { class: 'toggle' + (on ? ' on' : ''), role: 'switch', 'aria-checked': String(on), 'aria-label': label, onclick: fn });
   kids.push(h('div', { class: 'row2' }, h('div', {}, h('div', {}, 'Marcador automático'), h('div', { class: 'sub' }, 'Al seleccionar texto se subraya solo con el color elegido')),
-    toggle(settings.auto, () => apply({ auto: !settings.auto }))));
+    toggle(settings.auto, () => apply({ auto: !settings.auto }), 'Marcador automático')));
   kids.push(h('div', { class: 'lbl' }, 'Color del marcador'), h('div', { class: 'seg' }, ...HL_COLORS.map((c, i) =>
     h('button', { class: settings.color === i ? 'on' : '', 'aria-label': HL_NAMES[i], onclick: () => apply({ color: i }) }, h('i', { style: `display:block;height:18px;border-radius:9px;background:${c}` })))));
   kids.push(h('div', { class: 'row2' }, h('div', {}, h('div', {}, 'Mostrar barra inferior'), h('div', { class: 'sub' }, 'Progreso y herramientas. También con el botón ⌄ de la barra o la tecla B')),
-    toggle(!settings.barHidden, () => setBarHidden(!settings.barHidden))));
+    toggle(!settings.barHidden, () => setBarHidden(!settings.barHidden), 'Mostrar barra inferior')));
   kids.push(h('div', { class: 'row2' }, h('div', {}, h('div', {}, 'Pomodoro y Feynman'), h('div', { class: 'sub' }, `${pc().w} min de enfoque · ${pc().s} de descanso · pausa Feynman ${settings.feynman ? 'activada' : 'apagada'}`)),
     h('button', { class: 'btn ghost', onclick: pomoConfig }, 'Configurar')));
   kids.push(h('div', { class: 'row2' }, h('div', {}, h('div', {}, 'Voz de lectura'), h('div', { class: 'sub' }, settings.ttsVoiceLabel || 'Automática · varias en español latino')),
     h('button', { class: 'btn ghost', onclick: voicePicker }, 'Elegir voz')));
   kids.push(h('div', { class: 'row2' }, h('div', {}, h('div', {}, 'Pasar página tocando los bordes'), h('div', { class: 'sub' }, 'Toca el borde izquierdo o derecho para retroceder o avanzar. En laptop: flechas ← → o espacio')),
-    toggle(settings.tapTurn, () => apply({ tapTurn: !settings.tapTurn }))));
+    toggle(settings.tapTurn, () => apply({ tapTurn: !settings.tapTurn }), 'Pasar página tocando los bordes')));
   const gl = h('b', {}, settings.goal + ' min');
-  kids.push(h('div', { class: 'lbl' }, 'Meta diaria de lectura', gl), slider(10, 180, 5, settings.goal, (n) => { gl.textContent = n + ' min'; saveSettings({ goal: n }); }));
+  kids.push(h('div', { class: 'lbl' }, 'Meta diaria de lectura', gl), slider(10, 180, 5, settings.goal, (n) => { gl.textContent = n + ' min'; saveSettings({ goal: n }); }, 'Meta diaria de lectura'));
   kids.push(h('div', { class: 'lbl' }, 'Datos'));
   const stRow = h('div', { class: 'row2' }, h('div', { class: 'sub' }, 'Revisando almacenamiento…'));
   kids.push(stRow);
@@ -1171,7 +1217,7 @@ async function importBackup(file) {
     if (data.app !== 'lumen') throw new Error('no es una copia de Lumen');
     const map = new Map();
     for (const b of data.books) {
-      const local = S.books.find((x) => (x.name === b.name && x.size === b.size) || x.title === b.title);
+      const local = S.books.find((x) => x.name === b.name && x.size === b.size) || S.books.find((x) => x.title === b.title && x.format === b.format && !S.books.some((y) => y !== x && y.title === b.title && y.format === b.format));
       if (local) { map.set(b.id, local.id); if (b.marks?.length && !local.marks?.length) { local.marks = b.marks; await DB.putBook(local); } if (!local.lastRead) { local.progress = b.progress || 0; local.pos = b.pos || null; local.lastRead = b.pos ? 1 : 0; await DB.putBook(local); } }
     }
     let added = 0, skipped = 0;
@@ -1252,8 +1298,7 @@ async function newFolder(select) {
   const f = { id: DB.uid(), name: r.name, color: r.color };
   S.folders.push(f);
   await saveFolders();
-  if (select) { S.libTab = 'books'; S.lib.folder = f.id; S.lib.q = ''; const q = $('#q'); if (q) q.value = ''; }
-  renderLibrary();
+  if (select) openFolder(f.id); else renderLibrary();
   return f;
 }
 async function renameFolder(f) {
@@ -1457,13 +1502,14 @@ const SRS_DAYS = [1, 3, 7, 14, 30, 60];
 const saveFey = () => DB.kvSet('fey', S.fey);
 
 async function openFeynman(opts = {}) {
-  const v = opts.cap ? null : activeView();
+  const v = opts.cap ? null : (opts.viewId && S.views.get(opts.viewId)) || activeView();
   const book = opts.book || v?.book;
   let cap = opts.cap;
   if (!cap) {
     if (!v) { toast('Abre un documento para hacer la pausa Feynman'); return null; }
     cap = await captureRead(v);
     if (cap.text.replace(/\s/g, '').length < 120) {
+      if (v.kind === 'pdf' && isScan(v.book)) { toast('Este PDF es una imagen escaneada (sin texto): no puedo comparar tu explicación con él', { ms: 5000 }); return null; }
       toast(opts.auto ? 'Casi no leíste en este bloque: sigue con el descanso' : 'Lee un poco más y vuelve a intentarlo: aún no hay texto suficiente', { ms: 4000 });
       return null;
     }
@@ -1517,8 +1563,9 @@ async function openFeynman(opts = {}) {
       if (reread && cap.pos && v) { gotoMark(v, { pos: cap.pos }); setTimeout(renderBar, 80); }
     };
     if (prev) { analyzed = true; an.hidden = false; paint(); }
+    box._onClose = () => { try { rec?.stop(); } catch { /* ya detenido */ } };
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    let rec = null;
+    var rec = null;
     const mic = SR ? h('button', { class: 'chip', onclick: () => {
       if (rec) { rec.stop(); return; }
       rec = new SR();
@@ -1554,7 +1601,7 @@ function pomoConfig() {
       return h('label', { class: 'cfg-n' }, h('span', {}, label), i);
     };
     const tg = (label, sub, key) => {
-      const b = h('button', { class: 'toggle' + (settings[key] ? ' on' : ''), role: 'switch', onclick: () => { saveSettings({ [key]: !settings[key] }); b.classList.toggle('on', settings[key]); } });
+      const b = h('button', { class: 'toggle' + (settings[key] ? ' on' : ''), role: 'switch', 'aria-checked': String(!!settings[key]), 'aria-label': label, onclick: () => { saveSettings({ [key]: !settings[key] }); b.classList.toggle('on', settings[key]); b.setAttribute('aria-checked', String(!!settings[key])); } });
       return h('div', { class: 'row2' }, h('div', {}, h('div', {}, label), h('div', { class: 'sub' }, sub)), b);
     };
     box.append(h('h3', {}, 'Pomodoro y Feynman'),
@@ -1564,6 +1611,31 @@ function pomoConfig() {
       tg('Empezar el siguiente pomodoro solo', 'Sin tocar nada al terminar el descanso', 'pomoAuto'),
       h('div', { class: 'acts' }, h('button', { class: 'btn', onclick: () => close(null) }, 'Listo')));
   });
+}
+
+// Aviso del temporizador aunque la app esté en segundo plano o con la pantalla apagada.
+const lnOk = () => native && Capacitor.isPluginAvailable('LocalNotifications');
+const NOTIF_ID = 7001;
+async function askNotifyPermission() {
+  try {
+    if (lnOk()) { const p = await LocalNotifications.checkPermissions(); if (p.display === 'prompt' || p.display === 'prompt-with-rationale') await LocalNotifications.requestPermissions(); }
+    else if ('Notification' in window && Notification.permission === 'default') await Notification.requestPermission();
+  } catch { /* sin permiso: queda el aviso dentro de la app */ }
+}
+async function scheduleEndNotice(t) {
+  const work = t.phase === 'work';
+  const title = work ? 'Bloque de enfoque terminado' : 'Descanso terminado';
+  const body = work ? 'Haz tu pausa Feynman y descansa un momento.' : 'Cuando quieras, empieza el siguiente bloque.';
+  clearTimeout(S.noticeT);
+  if (lnOk()) {
+    try { await LocalNotifications.schedule({ notifications: [{ id: NOTIF_ID, title, body, smallIcon: 'ic_stat_lumen', schedule: { at: new Date(t.end), allowWhileIdle: true } }] }); } catch (e) { console.warn('aviso', e); }
+  } else if ('Notification' in window && Notification.permission === 'granted') {
+    S.noticeT = setTimeout(() => { if (document.hidden) { try { new Notification(title, { body, icon: 'icon-192.png' }); } catch { /* no disponible */ } } }, Math.max(0, t.end - Date.now()));
+  }
+}
+function cancelEndNotice() {
+  clearTimeout(S.noticeT);
+  if (lnOk()) LocalNotifications.cancel({ notifications: [{ id: NOTIF_ID }] }).catch(() => {});
 }
 
 function timerMenu() {
@@ -1590,26 +1662,27 @@ function timerMenu() {
 }
 function startWork(min, single) {
   S.pomoCycle = single ? 0 : (S.pomoCycle || 0) + 1;
-  S.timer = { phase: 'work', end: Date.now() + min * 60000, min, single };
+  S.timer = { phase: 'work', end: Date.now() + min * 60000, min, single, viewId: S.panes[S.focus] || null };
+  askNotifyPermission().then(() => { if (S.timer) scheduleEndNotice(S.timer); });
   startTrack(activeView());
   clearInterval(S.timerI);
   S.timerI = setInterval(timerTick, 1000);
   timerTick();
   toast(single ? `Bloque de ${min} min en marcha` : `Pomodoro ${S.pomoCycle} · ${min} min de enfoque`);
 }
-function stopTimer() { clearInterval(S.timerI); S.timer = null; timerTick(); }
+function stopTimer() { clearInterval(S.timerI); S.timer = null; cancelEndNotice(); timerTick(); }
 async function endWork() {
   const t = S.timer;
   if (!t) return;
   stopTimer();
   chime();
-  navigator.vibrate?.([300, 150, 300, 150, 300]);
+  vibrate([300, 150, 300, 150, 300]);
   S.stats.pomos ||= {};
   const k = dayKey();
   S.stats.pomos[k] = (S.stats.pomos[k] || 0) + 1;
   DB.kvSet('stats', S.stats);
   if (S.screen === 'library') renderLibrary();
-  if (settings.feynman) await openFeynman({ auto: true });
+  if (settings.feynman) await openFeynman({ auto: true, viewId: t.viewId });
   if (t.single) { toast(`¡${t.min} minutos cumplidos!`, { ms: 4000 }); return; }
   startBreak();
 }
@@ -1618,6 +1691,7 @@ function startBreak() {
   const long = S.pomoCycle % c.n === 0;
   const min = long ? c.l : c.s;
   S.timer = { phase: long ? 'long' : 'short', end: Date.now() + min * 60000, min };
+  scheduleEndNotice(S.timer);
   clearInterval(S.timerI);
   S.timerI = setInterval(timerTick, 1000);
   timerTick();
@@ -1625,7 +1699,7 @@ function startBreak() {
 }
 function endBreak(skip) {
   stopTimer();
-  if (!skip) { chime(); navigator.vibrate?.([200, 100, 200]); }
+  if (!skip) { chime(); vibrate([200, 100, 200]); }
   if (settings.pomoAuto || skip) startWork(pc().w, false);
   else toast('Descanso terminado', { sticky: true, action: { label: `Empezar pomodoro ${S.pomoCycle + 1}`, fn: () => startWork(pc().w, false) } });
 }
@@ -1733,15 +1807,32 @@ function review(book, list) {
 const Tts = registerPlugin('LumenTts');
 const Incoming = registerPlugin('LumenIncoming');
 const ttsNative = () => native && Capacitor.isPluginAvailable('LumenTts');
+function softSplit(s, max) {
+  if (s.length <= max) return [s];
+  const out = [];
+  let rest = s;
+  while (rest.length > max) {
+    let cut = Math.max(rest.lastIndexOf(', ', max), rest.lastIndexOf(' ', max));
+    if (cut < max * 0.4) cut = max;
+    out.push(rest.slice(0, cut + 1).trim());
+    rest = rest.slice(cut + 1);
+  }
+  if (rest.trim()) out.push(rest.trim());
+  return out;
+}
+// El motor de voz de Android admite textos largos; el del navegador se corta, por eso allí se lee por frases.
 function splitChunks(t) {
-  if (t.length <= 1200) return [t];
+  const max = ttsNative() ? 900 : 190;
+  if (t.length <= max) return [t];
   const out = [];
   let cur = '';
   for (const s of t.match(/[^.!?;:]+[.!?;:]*\s*/g) || [t]) {
-    if ((cur + s).length > 1200 && cur) { out.push(cur); cur = ''; }
-    cur += s;
+    for (const piece of softSplit(s, max)) {
+      if ((cur + piece).length > max && cur) { out.push(cur.trim()); cur = ''; }
+      cur += piece + ' ';
+    }
   }
-  if (cur) out.push(cur);
+  if (cur.trim()) out.push(cur.trim());
   return out;
 }
 async function ttsItems(v) {
@@ -1824,8 +1915,14 @@ function speakChunk(text, rate) {
       || vs.filter((x) => !/-ES$/i.test(x.lang.replace('_', '-'))).find((x) => /google|natural|online/i.test(x.name))
       || vs.find((x) => !/-ES$/i.test(x.lang.replace('_', '-'))) || vs[0];
     if (pick) { u.voice = pick; u.lang = pick.lang; }
-    u.onend = () => res({});
-    u.onerror = (e) => (['interrupted', 'canceled'].includes(e.error) ? res({ stopped: true }) : rej(new Error(e.error)));
+    let ended = false;
+    const finish = (fn) => { if (ended) return; ended = true; clearInterval(watch); window.__lumenUtt = null; fn(); };
+    u.onend = () => finish(() => res({}));
+    u.onerror = (e) => finish(() => (['interrupted', 'canceled'].includes(e.error) ? res({ stopped: true }) : rej(new Error(e.error))));
+    // Algunos motores del navegador dejan de avisar al terminar: se vigila el estado real.
+    const t0 = Date.now();
+    const watch = setInterval(() => { if (Date.now() - t0 > 800 && !speechSynthesis.speaking && !speechSynthesis.pending) finish(() => res({})); }, 400);
+    window.__lumenUtt = u;
     speechSynthesis.speak(u);
   });
 }
@@ -1835,12 +1932,12 @@ function ttsEngineStop() {
 }
 async function toggleTts() {
   if (S.tts) { stopTts(); return; }
-  if (native && !Capacitor.isPluginAvailable('LumenTts')) { toast('Para leer en voz alta instala el APK 1.4.0 (esta parte no llega por actualización automática)', { ms: 6000 }); return; }
+  if (native && !Capacitor.isPluginAvailable('LumenTts')) { toast('Para leer en voz alta instala la última versión del APK (esta parte no llega por actualización automática)', { ms: 6000 }); return; }
   if (!native && !('speechSynthesis' in window)) { toast('Este navegador no puede leer en voz alta'); return; }
   const v = activeView();
   if (!v) return;
   const items = await ttsItems(v);
-  if (!items.length) { toast('No encontré texto para leer aquí'); return; }
+  if (!items.length) { toast(v.kind === 'pdf' && isScan(v.book) ? 'Este PDF es una imagen escaneada (sin texto): no se puede leer en voz alta' : 'No encontré texto para leer aquí'); return; }
   S.tts = { view: v, items, i: 0, playing: true, rate: settings.ttsRate || 1 };
   renderTtsBar();
   ttsLoop();
@@ -2050,13 +2147,13 @@ export async function start() {
   $('#file').onchange = (e) => { const f = [...e.target.files]; e.target.value = ''; onFiles(f); };
   $('#bk').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) importBackup(f); };
   $('#q').oninput = (e) => { S.lib.q = e.target.value.trim(); renderLibrary(); $('#q').focus(); };
-  $('#libnav').onclick = (e) => { const b = e.target.closest('button'); if (b) { if (b.dataset.t === 'books') S.lib.folder = 'all'; S.libTab = b.dataset.t; renderLibrary(); } };
+  $('#libnav').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; if (b.dataset.t === 'books') openFolder('all'); else { S.libTab = b.dataset.t; renderLibrary(); } };
   $('#backdrop').onclick = closePanel;
   $('#grid').onclick = (e) => {
     if (S.lpFired) { S.lpFired = false; return; }
     if (S.selMode) { const c = e.target.closest('.card'); if (c) toggleSel(c.dataset.id); return; }
     const fo = e.target.closest('[data-folder]');
-    if (fo) { S.lib.folder = fo.dataset.folder; renderLibrary(); $('#libMain').scrollTop = 0; return; }
+    if (fo) { openFolder(fo.dataset.folder); return; }
     const m = e.target.closest('[data-more]');
     if (m) { bookMenu(m.dataset.more); return; }
     const o = e.target.closest('[data-open]');
@@ -2069,7 +2166,7 @@ export async function start() {
     S.lpFired = false;
     clearTimeout(lpT);
     if (!c || S.selMode || e.target.closest('[data-more]') || e.pointerType === 'mouse') return;
-    lpT = setTimeout(() => { S.lpFired = true; S.selMode = true; S.sel.add(c.dataset.id); navigator.vibrate?.(15); updateSelBar(); renderLibrary(); }, 500);
+    lpT = setTimeout(() => { S.lpFired = true; S.selMode = true; S.sel.add(c.dataset.id); vibrate(15); updateSelBar(); renderLibrary(); }, 500);
   });
   ['pointerup', 'pointercancel', 'pointermove'].forEach((t) => $('#grid').addEventListener(t, () => clearTimeout(lpT)));
   $('#selMove').onclick = async () => { if (!S.sel.size) { toast('Marca primero uno o más documentos'); return; } const f = await pickFolder(`Mover ${S.sel.size} ${S.sel.size === 1 ? 'documento' : 'documentos'} a…`); if (f) moveBooks([...S.sel], f); };
@@ -2155,7 +2252,12 @@ export async function start() {
     S.skipTap = !$('#selbar').hidden;
     if (!$('#selbar').hidden && !e.target.closest('mark.hl')) hideBar();
   });
-  document.addEventListener('selectionchange', () => { clearTimeout(selT); selT = setTimeout(onSelection, 320); });
+  document.addEventListener('selectionchange', () => {
+    const sel = getSelection();
+    document.querySelectorAll('.textLayer').forEach((l) => l.classList.toggle('selecting', sel.rangeCount > 0 && sel.getRangeAt(0).intersectsNode(l)));
+    clearTimeout(selT);
+    selT = setTimeout(onSelection, 320);
+  });
   document.addEventListener('keydown', (e) => {
     const typing = /^(INPUT|TEXTAREA)$/.test(e.target.tagName);
     if (e.key === 'Escape') { if (S.closeModal) S.closeModal(); else if (S.panel) closePanel(); else if (S.selMode) endSel(); else if (S.focusMode) setFocus(false); else hideBar(); }
@@ -2180,7 +2282,10 @@ export async function start() {
     if (S.screen === 'library') { clearTimeout(S.rzT); S.rzT = setTimeout(renderLibrary, 150); }
   });
   addEventListener('beforeunload', () => S.views.forEach((v) => flushProgress(v.book)));
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') S.views.forEach((v) => flushProgress(v.book)); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') S.views.forEach((v) => flushProgress(v.book));
+    else if (S.timer) timerTick();
+  });
   // Arrastrar archivos (laptop)
   addEventListener('dragover', (e) => {
     e.preventDefault();
@@ -2233,6 +2338,7 @@ export async function start() {
   if (native) {
     CapApp.addListener('backButton', () => {
       if (S.closeModal) S.closeModal();
+      else if (!$('#morePop').hidden) { $('#morePop').hidden = true; $('#moreBtn').setAttribute('aria-expanded', 'false'); }
       else if (S.focusMode) setFocus(false);
       else if (S.selMode) endSel();
       else if (!$('#selbar').hidden) hideBar();
@@ -2263,5 +2369,7 @@ export async function start() {
     takeIncoming();
   }
   if (!S.books.length && !settings.welcomed) setTimeout(showWelcome, 500);
+  // Solo en desarrollo: acceso para pruebas automáticas (no existe en la versión publicada).
+  if (import.meta.env.DEV) window.__lumen = { S, DB, openBook, closeTab, startWork, endWork, endBreak, stopTimer, openFeynman, review, setPdfMode, exportBackup, backupData, importBackup, addFile, onFiles, toggleTts, stopTts, ttsItems, splitChunks, hlList, createHl, pdfTexts, renderLibrary, goLibrary, openFolder, toggleBookmark, setFocus };
   return true;
 }

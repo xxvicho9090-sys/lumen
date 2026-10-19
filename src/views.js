@@ -32,6 +32,30 @@ export async function pdfOutline(pdf) {
   return out;
 }
 
+// Rango dentro de `root` para el texto plegado `fq` (sin acentos ni mayúsculas); funciona aunque cruce etiquetas internas.
+function nodeRange(root, from, len) {
+  const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let pos = 0, n, sn = null, so = 0, en = null, eo = 0;
+  const end = from + len;
+  while ((n = w.nextNode())) {
+    const l = n.data.length;
+    if (!sn && from < pos + l) { sn = n; so = from - pos; }
+    if (sn && end <= pos + l) { en = n; eo = end - pos; break; }
+    pos += l;
+  }
+  if (!sn || !en) return null;
+  const r = document.createRange();
+  r.setStart(sn, Math.max(0, so));
+  r.setEnd(en, Math.max(0, eo));
+  return r;
+}
+function flashRange(range) {
+  try {
+    CSS.highlights.set('flash', new Highlight(range));
+    setTimeout(() => CSS.highlights.delete('flash'), 2000);
+  } catch { /* sin CSS Highlight API */ }
+}
+
 function flashMark(el) {
   el.classList.add('flash');
   setTimeout(() => el.classList.remove('flash'), 1800);
@@ -131,6 +155,12 @@ export class FlowView {
     if (a) {
       e.preventDefault();
       const href = a.getAttribute('href') || '';
+      if (href.startsWith('#') && href.length > 1) {
+        let t = null;
+        try { t = this.el.querySelector('#' + CSS.escape(decodeURIComponent(href.slice(1)))) || this.el.querySelector(`[name="${CSS.escape(decodeURIComponent(href.slice(1)))}"]`); } catch { /* ancla rara */ }
+        if (t) this.scrollToEl(t, false);
+        return;
+      }
       if (this.data.pathToSec && !/^[a-z]+:/i.test(href)) {
         const sec = a.closest('section');
         const base = (sec?.dataset.sec != null ? this.data.sections[sec.dataset.sec].path : '') || '';
@@ -148,31 +178,29 @@ export class FlowView {
   search(q) {
     const fq = fold(q);
     const out = [];
+    const SEL = 'p,li,h1,h2,h3,h4,h5,h6,td,th,blockquote,pre,figcaption,dd,dt,div';
     for (let si = 0; si < this.secs.length; si++) {
-      const w = document.createTreeWalker(this.secs[si], NodeFilter.SHOW_TEXT);
-      let n;
-      while ((n = w.nextNode())) {
-        const f = fold(n.data);
+      const sec = this.secs[si];
+      let blocks = [...sec.querySelectorAll(SEL)].filter((b) => !b.querySelector(SEL));
+      if (!blocks.length) blocks = [sec];
+      for (const b of blocks) {
+        const text = b.textContent;
+        const f = fold(text);
         let i = -1;
         while ((i = f.indexOf(fq, i + 1)) !== -1) {
-          const node = n, at = i;
-          out.push({ label: this.paged ? `Pág. ${si + 1}` : '', snippet: snip(n.data, i, q.length), go: () => this.flashText(node, at, q.length) });
+          const block = b, at = i;
+          out.push({ label: this.paged ? `Pág. ${si + 1}` : '', snippet: snip(text, i, q.length), go: () => this.flashText(block, at, q.length) });
           if (out.length >= 200) return out;
         }
       }
     }
     return out;
   }
-  flashText(node, at, len) {
-    if (!node.isConnected) return;
-    const r = document.createRange();
-    r.setStart(node, at);
-    r.setEnd(node, Math.min(at + len, node.data.length));
-    this.scrollToEl(node.parentElement, true);
-    try {
-      CSS.highlights.set('flash', new Highlight(r));
-      setTimeout(() => CSS.highlights.delete('flash'), 2000);
-    } catch { /* sin CSS Highlight API */ }
+  flashText(block, at, len) {
+    if (!block.isConnected) return;
+    const r = nodeRange(block, at, len);
+    this.scrollToEl(r ? (r.startContainer.parentElement || block) : block, true);
+    if (r) flashRange(r);
   }
 
   // Zoom con los dedos: en texto que fluye cambia el tamaño de letra.
@@ -354,11 +382,15 @@ export class PdfPageView {
       pg._tl = new TextLayer({ textContentSource: page.streamTextContent(), container: tl, viewport: vp });
       await pg._tl.render();
       if (!alive()) return;
+      // Ancla de fin de contenido (como en el visor de pdf.js): evita que la selección salte a cualquier parte de la página.
+      const eoc = document.createElement('div');
+      eoc.className = 'endOfContent';
+      tl.append(eoc);
       for (const h of this.app.hls(this.book.id)) if (h.sec === i) applyHl(tl, h);
       page.cleanup();
     } catch (e) {
-      if (e?.name !== 'RenderingCancelledException') console.warn('pdf página', i, e);
-      pg._on = false;
+      if (!['RenderingCancelledException', 'AbortException'].includes(e?.name)) console.warn('pdf página', i, e);
+      if (pg._tok === tok) pg._on = false;
     }
   }
 
@@ -423,11 +455,31 @@ export class PdfPageView {
       const f = fold(t);
       let i = -1;
       while ((i = f.indexOf(fq, i + 1)) !== -1) {
-        out.push({ label: `Pág. ${p + 1}`, snippet: snip(t, i, q.length), go: () => this.gotoPage(p) });
+        out.push({ label: `Pág. ${p + 1}`, snippet: snip(t, i, q.length), go: () => this.flashQuery(p, fq) });
         if (out.length >= 200) return out;
       }
     }
     return out;
+  }
+
+  // Va a la página y, cuando su texto está listo, marca la primera coincidencia.
+  flashQuery(p, fq) {
+    this.gotoPage(p);
+    let tries = 0;
+    const t = setInterval(() => {
+      const tl = this.pgs[p]?.querySelector('.textLayer');
+      if (tl && tl.childNodes.length) {
+        clearInterval(t);
+        const i = fold(tl.textContent).indexOf(fq);
+        const r = i >= 0 ? nodeRange(tl, i, fq.length) : null;
+        if (r) {
+          const er = this.el.getBoundingClientRect();
+          const rr = r.getBoundingClientRect();
+          this.el.scrollTop += rr.top - er.top - this.el.clientHeight / 3;
+          flashRange(r);
+        }
+      } else if (++tries > 30) clearInterval(t);
+    }, 100);
   }
 
   // Zoom con los dedos: se escala la vista mientras se pellizca y al soltar se redibuja nítida.

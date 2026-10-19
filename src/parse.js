@@ -48,13 +48,49 @@ async function docx(blob) {
   return { kind: 'flow', ...chunk(clean(d.body)) };
 }
 
+function mdInline(s) {
+  return esc(s)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*|__([^_]+)__/g, (m, a, b) => `<strong>${a || b}</strong>`)
+    .replace(/(^|[^*\w])\*([^*\s][^*]*)\*(?!\w)/g, '$1<em>$2</em>')
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2">$1</a>');
+}
+function mdToHtml(text) {
+  const lines = text.split('\n');
+  const out = [];
+  let para = [], list = null, i = 0;
+  const flushP = () => { if (para.length) { out.push('<p>' + mdInline(para.join(' ')) + '</p>'); para = []; } };
+  const flushL = () => { if (list) { out.push(`<${list.t}>` + list.items.map((x) => `<li>${mdInline(x)}</li>`).join('') + `</${list.t}>`); list = null; } };
+  while (i < lines.length) {
+    const ln = lines[i];
+    let m;
+    if (/^```/.test(ln)) {
+      flushP(); flushL();
+      const buf = [];
+      i++;
+      while (i < lines.length && !/^```/.test(lines[i])) buf.push(lines[i++]);
+      out.push('<pre><code>' + esc(buf.join('\n')) + '</code></pre>');
+    } else if ((m = ln.match(/^(#{1,6})\s+(.*)$/))) { flushP(); flushL(); out.push(`<h${m[1].length}>${mdInline(m[2])}</h${m[1].length}>`); }
+    else if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(ln)) { flushP(); flushL(); out.push('<hr>'); }
+    else if ((m = ln.match(/^\s*[-*+]\s+(.*)$/))) { flushP(); if (!list || list.t !== 'ul') { flushL(); list = { t: 'ul', items: [] }; } list.items.push(m[1]); }
+    else if ((m = ln.match(/^\s*\d+[.)]\s+(.*)$/))) { flushP(); if (!list || list.t !== 'ol') { flushL(); list = { t: 'ol', items: [] }; } list.items.push(m[1]); }
+    else if ((m = ln.match(/^>\s?(.*)$/))) { flushP(); flushL(); out.push('<blockquote>' + mdInline(m[1]) + '</blockquote>'); }
+    else if (!ln.trim()) { flushP(); flushL(); }
+    else { flushL(); para.push(ln.trim()); }
+    i++;
+  }
+  flushP(); flushL();
+  return out.join('');
+}
+
 function plain(text, name) {
-  const md = /\.md$/i.test(name);
+  text = text.replace(/\r\n?/g, '\n');
+  if (/\.md$/i.test(name)) {
+    const d = new DOMParser().parseFromString(mdToHtml(text), 'text/html');
+    return { kind: 'flow', ...chunk(clean(d.body)) };
+  }
   const paras = /\n\s*\n/.test(text) ? text.split(/\n\s*\n/).map((p) => p.replace(/\n/g, ' ')) : text.split('\n');
-  const html = paras.map((p) => p.trim()).filter(Boolean).map((p) => {
-    const m = md && p.match(/^(#{1,3})\s+(.*)/);
-    return m ? `<h${m[1].length}>${esc(m[2])}</h${m[1].length}>` : `<p>${esc(p)}</p>`;
-  }).join('');
+  const html = paras.map((p) => p.trim()).filter(Boolean).map((p) => `<p>${esc(p)}</p>`).join('');
   const d = new DOMParser().parseFromString(html, 'text/html');
   return { kind: 'flow', ...chunk(d.body) };
 }
@@ -94,7 +130,8 @@ async function epub(blob) {
   opf.querySelectorAll('manifest > item').forEach((i) => {
     manifest[i.getAttribute('id')] = { href: norm(dir, i.getAttribute('href')), type: i.getAttribute('media-type') || '', props: i.getAttribute('properties') || '' };
   });
-  const spine = [...opf.querySelectorAll('spine > itemref')].map((r) => manifest[r.getAttribute('idref')]).filter((m) => m && files[m.href] && /html|xml/.test(m.type));
+  let spine = [...opf.querySelectorAll('spine > itemref')].map((r) => manifest[r.getAttribute('idref')]).filter((m) => m && files[m.href] && /html|xml/.test(m.type));
+  if (spine.some((m) => !m.props.includes('nav'))) spine = spine.filter((m) => !m.props.includes('nav'));
   const urls = [];
   const cache = {};
   const blobUrl = (path) => {
