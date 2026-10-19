@@ -255,3 +255,34 @@ body.focus #focusTimer:not([hidden]){display:block}
 
 .tools button{flex:none;white-space:nowrap;padding:6px 8px}
 @media (max-width:640px){.tools{gap:2px}}
+
+#zoomCtl{display:none;position:absolute;right:12px;top:calc(var(--st) + 62px);flex-direction:column;gap:6px;z-index:8}
+body.focus #zoomCtl{display:flex}
+#zoomCtl .ib{margin:0;width:44px;height:44px;border-radius:50%;background:rgba(20,17,13,.55);color:#fff;font:600 20px var(--ui);opacity:.35;transition:opacity .2s;backdrop-filter:blur(6px)}
+#zoomCtl .ib:hover,#zoomCtl .ib:active,#zoomCtl .ib:focus-visible{opacity:1}
+#zoomCtl #zReset{font-size:12px}
+
+/* carpetas como vista principal */
+#grid.fgrid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:22px 16px}
+.fold{text-align:left;display:block;width:100%}
+.fshape{position:relative;aspect-ratio:4/3;margin-top:12px;border-radius:6px 16px 16px 16px;background:var(--panel);border:1px solid var(--line);box-shadow:0 6px 18px rgba(0,0,0,.2);overflow:visible}
+.ftab{position:absolute;left:-1px;top:-12px;width:46%;height:14px;border-radius:10px 10px 0 0;background:var(--panel);border:1px solid var(--line);border-bottom:0}
+.fold:hover .fshape,.fold:focus-visible .fshape{border-color:var(--acc)}
+.fcov{position:absolute;inset:14px 12px 10px;display:flex;align-items:flex-end;justify-content:center}
+.fcov img{height:100%;max-width:34%;object-fit:cover;object-position:top;border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,.4);margin:0 -4px;background:#fff}
+.fcov img:nth-child(1){transform:rotate(-5deg) translateY(4px)}
+.fcov img:nth-child(3){transform:rotate(5deg) translateY(4px)}
+.fcov img:nth-child(2){position:relative;z-index:1;height:106%}
+.fold .fn{font:600 16px/1.25 var(--disp);margin-top:10px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.fold.add .fshape{border-style:dashed;display:grid;place-items:center;background:transparent;box-shadow:none}
+.fold.add .ftab{background:transparent;border-style:dashed}
+.fold.add .plus{font:300 44px var(--ui);color:var(--acc)}
+.fold.add .fn{color:var(--acc)}
+
+.cont{padding:10px 12px;gap:12px;margin-bottom:14px;border-radius:18px}
+.cont .cover,.cont > .cover{width:56px!important;height:78px;aspect-ratio:auto}
+.cont h3{font-size:17px;margin:3px 0 0}
+.cont .bar{margin-top:4px}
+.stats{padding:8px 12px;margin-bottom:10px;gap:12px}
+.ring{width:42px;height:42px}.ring span{width:32px;height:32px;font-size:13px}
+.lib-head{margin-bottom:14px}

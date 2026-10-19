@@ -174,6 +174,19 @@ function attachPinch(view) {
   }, { passive: false });
 }
 
+// Zoom por pasos (botones y teclado), útil sobre todo en pantalla completa.
+function stepZoom(dir, reset) {
+  const v = activeView();
+  if (!v) return;
+  const r = v.el.getBoundingClientRect();
+  const st = { cx: r.width / 2, cy: r.height / 2, s: 1, base: v.zoomValue() };
+  if (reset) st.s = v.kind === 'pdf' ? 1 / st.base : 19 / st.base;
+  else st.s = v.kind === 'pdf' ? (dir > 0 ? 1.2 : 1 / 1.2) : (st.base + 2 * dir) / st.base;
+  v.pinchStart(st);
+  v.pinchMove(st);
+  v.pinchEnd(st);
+}
+
 const bookById = (id) => S.books.find((b) => b.id === id);
 const hlList = (id) => { if (!S.hl.has(id)) S.hl.set(id, []); return S.hl.get(id); };
 const activeView = () => S.views.get(S.panes[S.focus]);
@@ -429,6 +442,24 @@ function coverHtml(b, withMore) {
   return `<div class="cover">${inner}<i class="tg" style="background:var(--c-${b.tag})"></i><span class="fmt">${FMT[b.format]}</span></div>`
     + (withMore ? `<span class="more" data-more="${b.id}" role="button" aria-label="Opciones">⋯</span>` : '');
 }
+function renderFolderGrid() {
+  const grid = $('#grid');
+  const card = (id, name, books) => {
+    const covers = books.filter((b) => b.cover).slice(0, 3);
+    const prog = books.length ? Math.round(books.reduce((a, b) => a + (b.progress || 0), 0) / books.length * 100) : 0;
+    return h('button', { class: 'fold', 'data-folder': id, html:
+      `<div class="fshape"><i class="ftab"></i><div class="fcov">${covers.map((c) => `<img src="${c.cover}" alt="">`).join('')}</div></div>
+       <div class="fn">${esc(name)}</div><div class="pc">${books.length} ${books.length === 1 ? 'documento' : 'documentos'}${books.length ? ` · ${prog} %` : ''}</div>` });
+  };
+  const cards = S.folders.map((f) => card(f.id, f.name, S.books.filter((b) => b.folder === f.id)));
+  const un = S.books.filter((b) => !b.folder);
+  if (un.length) cards.push(card('none', 'Sin carpeta', un));
+  cards.push(h('button', { class: 'fold add', onclick: () => newFolder(true), html: '<div class="fshape"><i class="ftab"></i><div class="plus">+</div></div><div class="fn">Nueva carpeta</div><div class="pc">Un ramo, un curso…</div>' }));
+  const intro = !S.folders.length ? [h('div', { class: 'empty', style: 'grid-column:1/-1', html: S.books.length
+    ? '<b>Organiza tus documentos</b>Crea una carpeta por cada ramo y muévelos con el menú “⋯” de cada documento.'
+    : '<b>Empieza creando una carpeta</b>Una por ramo. Luego toca “Añadir libro” y elige tus PDF, Word o EPUB.<br>En laptop también puedes arrastrarlos a esta ventana.' })] : [];
+  grid.replaceChildren(...intro, ...cards);
+}
 const SORTS = {
   recent: (a, b) => (b.lastRead || b.added) - (a.lastRead || a.added),
   title: (a, b) => a.title.localeCompare(b.title, 'es'),
@@ -442,29 +473,31 @@ function renderLibrary() {
   $('#hlAll').hidden = S.libTab !== 'hls';
   document.querySelectorAll('#libnav button').forEach((b) => b.classList.toggle('on', b.dataset.t === S.libTab));
   if (S.libTab === 'hls') return renderAllHl();
-  renderStats();
   const { tag, fmt, q, folder } = S.lib;
+  const root = folder === 'all' && !q;
+  if (root) renderStats(); else $('#stats').replaceChildren();
   const last = [...S.books].filter((b) => b.lastRead).sort((a, b) => b.lastRead - a.lastRead)[0];
   const cont = $('#cont');
   cont.replaceChildren();
-  if (last && !q) {
+  if (last && root) {
     cont.append(h('button', { class: 'cont', onclick: () => openBook(last.id), html:
       `<div class="cover" style="width:92px;flex:none">${last.cover ? `<img src="${last.cover}" alt="">` : `<div class="t" style="background:${PALETTE[hash(last.title) % PALETTE.length]}">${esc(last.title)}</div>`}</div>
        <div class="meta"><div><div class="eyebrow">Continuar leyendo</div><h3>${esc(last.title)}</h3>
-       <div class="sub">${TAGS[last.tag]} · ${FMT[last.format]} · ${(() => { const n = (S.hl.get(last.id) || []).length; return n ? `${n} ${n === 1 ? 'subrayado' : 'subrayados'}` : ''; })()}</div></div>
+       <div class="sub">${[S.folders.find((f) => f.id === last.folder)?.name || TAGS[last.tag], FMT[last.format], (() => { const n = (S.hl.get(last.id) || []).length; return n ? `${n} ${n === 1 ? 'subrayado' : 'subrayados'}` : ''; })()].filter(Boolean).join(' · ')}</div></div>
        <div><div class="bar"><i style="width:${Math.round(last.progress * 100)}%"></i></div><div class="sub" style="margin-top:6px">${Math.round(last.progress * 100)} %</div></div></div>` }));
   }
   const chip = (label, on, fn) => h('button', { class: 'chip' + (on ? ' on' : ''), onclick: fn }, label);
   const cnt = (id) => S.books.filter((b) => (id === 'none' ? !b.folder : b.folder === id)).length;
   const unfiled = cnt('none');
-  $('#folderChips').replaceChildren(
-    chip('Todas', folder === 'all', () => { S.lib.folder = 'all'; renderLibrary(); }),
-    ...S.folders.map((f) => chip(`${f.name} · ${cnt(f.id)}`, folder === f.id, () => { S.lib.folder = f.id; renderLibrary(); })),
-    ...(S.folders.length && unfiled ? [chip(`Sin carpeta · ${unfiled}`, folder === 'none', () => { S.lib.folder = 'none'; renderLibrary(); })] : []),
-    h('button', { class: 'chip add', onclick: () => newFolder(true) }, '+ Carpeta'));
+  $('#folderChips').replaceChildren();
   const cur = S.folders.find((f) => f.id === folder);
-  $('#folderHead').replaceChildren(...(cur ? [h('div', { class: 'fhead' }, h('div', {}, h('b', {}, cur.name), h('span', { class: 'sub' }, ` · ${cnt(cur.id)} documentos`)),
-    h('div', { style: 'display:flex;gap:8px' }, h('button', { class: 'btn ghost', onclick: () => renameFolder(cur) }, 'Renombrar'), h('button', { class: 'btn ghost', onclick: () => deleteFolder(cur) }, 'Eliminar')))] : []));
+  const back = h('button', { class: 'chip', onclick: () => { S.lib.folder = 'all'; renderLibrary(); $('#library').scrollTop = 0; } }, '‹ Carpetas');
+  $('#folderHead').replaceChildren(...(folder === 'all' ? [] : [h('div', { class: 'fhead' },
+    h('div', { style: 'display:flex;align-items:center;gap:12px;flex-wrap:wrap' }, back, h('b', {}, cur ? cur.name : 'Sin carpeta'), h('span', { class: 'sub' }, `${cnt(cur ? cur.id : 'none')} documentos`)),
+    cur ? h('div', { style: 'display:flex;gap:8px' }, h('button', { class: 'btn ghost', onclick: () => renameFolder(cur) }, 'Renombrar'), h('button', { class: 'btn ghost', onclick: () => deleteFolder(cur) }, 'Eliminar')) : null)]));
+  $('#tagChips').hidden = $('#fmtChips').hidden = root;
+  $('#grid').classList.toggle('fgrid', root);
+  if (root) { renderFolderGrid(); return; }
   $('#tagChips').replaceChildren(
     chip('Todos', tag === 'all', () => { S.lib.tag = 'all'; renderLibrary(); }),
     chip('Estudio', tag === 'estudio', () => { S.lib.tag = 'estudio'; renderLibrary(); }),
@@ -521,7 +554,13 @@ async function onFiles(files) {
     openBook(d.id);
     return;
   }
-  const inFolder = S.folders.some((f) => f.id === S.lib.folder) ? S.lib.folder : null;
+  let inFolder = S.folders.some((f) => f.id === S.lib.folder) ? S.lib.folder : null;
+  if (!inFolder && S.lib.folder === 'all' && S.folders.length) {
+    const t = await choose(ok.length > 1 ? `¿En qué carpeta van estos ${ok.length} documentos?` : '¿En qué carpeta va este documento?',
+      [...S.folders.map((f) => ({ label: f.name, value: f.id })), { label: 'Nueva carpeta…', value: '__new' }, { label: 'Sin carpeta', value: '__none' }]);
+    if (!t) return;
+    if (t === '__new') { const f = await newFolder(false); if (!f) return; inFolder = f.id; } else if (t !== '__none') inFolder = t;
+  }
   let tag = S.lib.tag !== 'all' ? S.lib.tag : inFolder ? 'estudio' : null;
   if (!tag) {
     tag = await choose(ok.length > 1 ? `¿Dónde van estos ${ok.length} documentos?` : '¿Dónde va este documento?', [
@@ -1351,6 +1390,7 @@ export async function start() {
       <section id="viewer" hidden><div id="views"></div></section>
       <button id="fab">${I.plus} Añadir libro</button>
       <button id="exitFocus" aria-label="Salir de pantalla completa">${I.expand}</button>
+      <div id="zoomCtl" aria-label="Zoom"><button id="zOut" class="ib" aria-label="Alejar">−</button><button id="zReset" class="ib" aria-label="Zoom normal">1:1</button><button id="zIn" class="ib" aria-label="Acercar">+</button></div>
       <div id="zoomHud" role="status"></div>
       <div id="focusTimer" hidden></div>
       <div id="ttsBar" hidden><button id="ttsPlay" class="ib" aria-label="Pausar o seguir"></button><button id="ttsStop" class="ib" aria-label="Detener lectura">${I.stop}</button><button id="ttsSpeed" class="chip" aria-label="Velocidad de lectura"></button><span id="ttsLabel"></span></div>
@@ -1397,14 +1437,19 @@ export async function start() {
   $('#splitBtn').onclick = toggleSplit;
   $('#installBtn').onclick = doInstall;
   $('#exitFocus').onclick = () => setFocus(false);
+  $('#zIn').onclick = () => stepZoom(1);
+  $('#zOut').onclick = () => stepZoom(-1);
+  $('#zReset').onclick = () => stepZoom(0, true);
   installUi();
   $('#fab').onclick = () => $('#file').click();
   $('#file').onchange = (e) => { const f = [...e.target.files]; e.target.value = ''; onFiles(f); };
   $('#bk').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) importBackup(f); };
   $('#q').oninput = (e) => { S.lib.q = e.target.value.trim(); renderLibrary(); $('#q').focus(); };
-  $('#libnav').onclick = (e) => { const b = e.target.closest('button'); if (b) { S.libTab = b.dataset.t; renderLibrary(); } };
+  $('#libnav').onclick = (e) => { const b = e.target.closest('button'); if (b) { if (b.dataset.t === 'books') S.lib.folder = 'all'; S.libTab = b.dataset.t; renderLibrary(); } };
   $('#backdrop').onclick = closePanel;
   $('#grid').onclick = (e) => {
+    const fo = e.target.closest('[data-folder]');
+    if (fo) { S.lib.folder = fo.dataset.folder; renderLibrary(); $('#library').scrollTop = 0; return; }
     const m = e.target.closest('[data-more]');
     if (m) { bookMenu(m.dataset.more); return; }
     const o = e.target.closest('[data-open]');
@@ -1452,6 +1497,10 @@ export async function start() {
     if (e.key === 'Escape') { if (S.closeModal) S.closeModal(); else if (S.panel) closePanel(); else if (S.focusMode) setFocus(false); else hideBar(); }
     else if (e.key.toLowerCase() === 'f' && !e.ctrlKey && !e.metaKey && !e.altKey && !typing && S.screen === 'reader' && !S.closeModal) setFocus(!S.focusMode);
     else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f' && S.screen === 'reader') { e.preventDefault(); S.panel = null; openPanel('search'); }
+    else if (!typing && S.screen === 'reader' && !S.closeModal && ['+', '=', '-', '_', '0'].includes(e.key) && !e.altKey) {
+      e.preventDefault();
+      if (e.key === '0') stepZoom(0, true); else stepZoom(e.key === '-' || e.key === '_' ? -1 : 1);
+    }
     else if (!typing && S.screen === 'reader' && !S.closeModal && ['ArrowRight', 'ArrowLeft', 'PageDown', 'PageUp', ' '].includes(e.key)) {
       e.preventDefault();
       turnPage(activeView(), e.key === 'ArrowLeft' || e.key === 'PageUp' || (e.key === ' ' && e.shiftKey) ? -1 : 1);
@@ -1477,6 +1526,7 @@ export async function start() {
       else if (!$('#selbar').hidden) hideBar();
       else if (S.panel) closePanel();
       else if (S.screen === 'reader') goLibrary();
+      else if (S.libTab === 'books' && S.lib.folder !== 'all' && !S.lib.q) { S.lib.folder = 'all'; renderLibrary(); }
       else if (S.libTab !== 'books') { S.libTab = 'books'; renderLibrary(); }
       else CapApp.minimizeApp();
     });
