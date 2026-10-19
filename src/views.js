@@ -256,7 +256,7 @@ export class PdfPageView {
 
   width() {
     const avail = Math.max(this.el.clientWidth - 12, 240);
-    return Math.round(Math.min(avail, 1000) * settings.pdfZoom);
+    return Math.round(Math.min(avail, 1000) * (this.book.zoom ?? settings.pdfZoom));
   }
 
   // Calcula el tamaño de las páginas y empieza a dibujar las visibles.
@@ -395,7 +395,7 @@ export class PdfPageView {
   }
 
   // Zoom con los dedos: se escala la vista mientras se pellizca y al soltar se redibuja nítida.
-  zoomValue() { return settings.pdfZoom; }
+  zoomValue() { return this.book.zoom ?? settings.pdfZoom; }
   pinchStart(st) {
     this.wrap.style.transformOrigin = `${this.el.scrollLeft + st.cx}px ${this.el.scrollTop + st.cy}px`;
     this.wrap.style.willChange = 'transform';
@@ -410,7 +410,8 @@ export class PdfPageView {
     this.wrap.style.willChange = '';
     if (st.z == null || Math.abs(st.z - st.base) < 0.02) return;
     const sl = this.el.scrollLeft, stp = this.el.scrollTop, old = this.pw;
-    saveSettings({ pdfZoom: Math.round(st.z * 100) / 100 });
+    this.book.zoom = Math.round(st.z * 100) / 100;
+    this.app.saveBook?.(this.book);
     this.relayout(true);
     const r = this.pw / old;
     this.el.scrollTop = (stp + st.cy) * r - st.cy;
