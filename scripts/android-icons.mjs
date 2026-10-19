@@ -1,16 +1,16 @@
-// Genera los íconos y la pantalla de arranque de Android a partir de public/icon.svg.
+// Genera los íconos y la pantalla de arranque de Android a partir de la marca de Lumen.
 import sharp from 'sharp';
-import { readdir, readFile, writeFile, rm } from 'node:fs/promises';
+import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 const p = (u) => fileURLToPath(u);
 const RES = new URL('../android/app/src/main/res/', import.meta.url);
-const BG = '#14110D';
-const book = (stroke = '#F5C25B') =>
-  `<path d="M256 120c-46-30-104-34-150-16v260c46-18 104-14 150 16 46-30 104-34 150-16V104c-46-18-104-14-150 16z" fill="none" stroke="${stroke}" stroke-width="24" stroke-linejoin="round"/><path d="M256 120v260" stroke="${stroke}" stroke-width="24"/><rect x="150" y="196" width="76" height="22" rx="11" fill="${stroke}" opacity=".55"/>`;
+const BG = '#0A0D18';
+const mark = (scale, stroke = 1.6) => `<g transform="translate(256 256) scale(${scale}) translate(-12 -10.5)" fill="none" stroke="#F4B740" stroke-width="${stroke}" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8.5c-2.2-1.6-5-2-8-1.2v10.6c3-.8 5.8-.4 8 1.2 2.2-1.6 5-2 8-1.2V7.3c-3-.8-5.8-.4-8 1.2zM12 8.5v10.6"/><path d="M12 1.8l.7 1.6 1.6.7-1.6.7L12 6.4l-.7-1.6-1.6-.7 1.6-.7z" fill="#F4B740" stroke="none"/></g>`;
 const full = Buffer.from(await readFile(new URL('../public/icon.svg', import.meta.url)));
-const round = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><circle cx="256" cy="256" r="256" fill="${BG}"/>${book()}</svg>`);
-const fg = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><g transform="translate(256 256) scale(.62) translate(-256 -250)">${book()}</g></svg>`);
+const round = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><circle cx="256" cy="256" r="256" fill="${BG}"/>${mark(13)}</svg>`);
+// Primer plano adaptativo: la zona segura es el 66 % central.
+const fg = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">${mark(10.4, 1.7)}</svg>`);
 
 for (const [d, k] of Object.entries({ mdpi: 1, hdpi: 1.5, xhdpi: 2, xxhdpi: 3, xxxhdpi: 4 })) {
   const dir = new URL(`mipmap-${d}/`, RES);
@@ -25,8 +25,8 @@ for (const name of await readdir(RES)) {
   const file = p(new URL(`${name}/splash.png`, RES));
   let meta;
   try { meta = await sharp(file).metadata(); } catch { continue; }
-  const s = Math.round(Math.min(meta.width, meta.height) * 0.26);
-  const icon = await sharp(full, { density: 300 }).resize(s, s).png().toBuffer();
+  const s = Math.round(Math.min(meta.width, meta.height) * 0.24);
+  const icon = await sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">${mark(15)}</svg>`), { density: 300 }).resize(s, s).png().toBuffer();
   const out = await sharp({ create: { width: meta.width, height: meta.height, channels: 4, background: BG } }).composite([{ input: icon, gravity: 'center' }]).png().toBuffer();
   await writeFile(file, out);
 }

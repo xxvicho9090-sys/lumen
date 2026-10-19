@@ -10,6 +10,7 @@ import { parseDoc, FORMATS, ext, epubMeta, extractPdfTexts, pdfTextSections, esc
 import { FlowView, PdfPageView, pdfOutline } from './views.js';
 import { anchorsFromRange } from './anchors.js';
 import { onUpdateStatus, getUpdateStatus, checkForUpdate, applyNow } from './updater.js';
+import { I, LOGO } from './icons.js';
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 const native = Capacitor.isNativePlatform();
@@ -26,34 +27,7 @@ const h = (tag, props = {}, ...kids) => {
   for (const c of kids.flat()) if (c != null) e.append(c.nodeType ? c : document.createTextNode(c));
   return e;
 };
-const svg = (p) => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${p}</svg>`;
-const I = {
-  book: svg('<path d="M4 5.5C4 4.7 4.7 4 5.5 4H11v16H5.5c-.8 0-1.5-.7-1.5-1.5zM20 5.5c0-.8-.7-1.5-1.5-1.5H13v16h5.5c.8 0 1.5-.7 1.5-1.5z"/>'),
-  plus: svg('<path d="M12 5v14M5 12h14"/>'),
-  search: svg('<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>'),
-  list: svg('<path d="M4 7h16M4 12h16M4 17h10"/>'),
-  marker: svg('<path d="m9 11 4 4M4 20l4-1 11-11-3-3L5 16z"/>'),
-  type: svg('<path d="M4 18 9 6l5 12M6 14h6M15 18l3-8 3 8M16 16h4"/>'),
-  trash: svg('<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>'),
-  note: svg('<path d="M5 4h14v12l-4 4H5zM15 20v-4h4M8 9h8M8 13h5"/>'),
-  copy: svg('<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/>'),
-  split: svg('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/>'),
-  sliders: svg('<path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/>'),
-  download: svg('<path d="M12 4v11M8 11l4 4 4-4M5 19h14"/>'),
-  expand: svg('<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>'),
-  chevron: svg('<path d="m6 9 6 6 6-6"/>'),
-  bulb: svg('<path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2.1h5c0-.9.4-1.6 1-2.1A6 6 0 0 0 12 3z"/>'),
-  grid: svg('<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>'),
-  rows: svg('<path d="M4 6h16M4 12h16M4 18h16"/>'),
-  bookmark: svg('<path d="M6 4h12v16l-6-4-6 4z"/>'),
-  timer: svg('<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2M9 2h6"/>'),
-  voice: svg('<path d="M4 10v4h4l5 4V6L8 10zM16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"/>'),
-  play: svg('<path d="M7 4v16l13-8z"/>'),
-  pause: svg('<path d="M8 5v14M16 5v14"/>'),
-  stop: svg('<rect x="6" y="6" width="12" height="12" rx="2"/>'),
-  share: svg('<path d="M12 4v12M8 8l4-4 4 4M5 14v5h14v-5"/>'),
-};
-const PALETTE = ['#F5C25B', '#7FB7A4', '#E8836B', '#B9A6E8', '#8FB8E8', '#E8C0A0'];
+const PALETTE = ['#E9B96E', '#C9D3F5', '#F0B5C0', '#A8DCC4', '#B5C7F2', '#E6C9A8'];
 const FMT = { pdf: 'PDF', docx: 'WORD', epub: 'EPUB', txt: 'TXT' };
 const TAGS = { estudio: 'Estudio', lectura: 'Lectura' };
 const hash = (s) => [...s].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7);
@@ -182,6 +156,26 @@ function attachPinch(view) {
   }, { passive: false });
 }
 
+// El dock se esconde al avanzar en el texto y reaparece al retroceder o al tocar el centro de la pantalla.
+function setDock(away) {
+  const bar = $('#bar');
+  if (!bar) return;
+  bar.classList.toggle('away', !!away);
+  if (away) { $('#morePop').hidden = true; $('#moreBtn').setAttribute('aria-expanded', 'false'); }
+}
+const dockLastY = new WeakMap();
+function dockOnScroll(e) {
+  const el = e.target;
+  if (!el.classList?.contains('view') || S.panel || S.focusMode) return;
+  const y = el.scrollTop;
+  const prev = dockLastY.get(el);
+  if (prev === undefined) { dockLastY.set(el, y); return; }
+  const d = y - prev;
+  if (Math.abs(d) < 10) return;
+  dockLastY.set(el, y);
+  setDock(d > 0 && y > 80);
+}
+
 // Ocultar o mostrar la barra inferior (progreso y herramientas) para leer sin distracciones.
 function setBarHidden(hide) {
   saveSettings({ barHidden: !!hide });
@@ -191,6 +185,21 @@ function setBarHidden(hide) {
   if (settings.barHidden) toast('Barra oculta · toca la flecha abajo a la derecha o pulsa B para mostrarla', { ms: 3500 });
   requestAnimationFrame(() => S.views.forEach((v) => v.relayout?.()));
   if (S.panel === 'cfg') renderPanel();
+}
+
+// Primera vez: qué hace Lumen, en cuatro líneas.
+function showWelcome() {
+  modal((box, close) => {
+    const row = (icon, t, d) => h('div', {}, h('span', { html: icon }), h('p', { style: 'margin:0' }, h('b', {}, t), h('span', {}, d)));
+    box.append(h('div', { class: 'eyebrow', style: 'margin-bottom:10px' }, 'Bienvenido a Lumen'),
+      h('h3', {}, 'Tu lugar para leer y estudiar'),
+      h('div', { class: 'welcome-list' },
+        row(I.marker, 'Subrayado que no se mueve', 'Queda pegado a las letras, aunque cambies el tamaño o el zoom.'),
+        row(I.folder, 'Una carpeta por ramo', 'Sube varios PDF, Word o EPUB a la vez y ordénalos como quieras.'),
+        row(I.bulb, 'Pomodoro y método Feynman', 'Bloques de enfoque y una pausa para explicar con tus palabras lo aprendido.'),
+        row(I.offline, 'Funciona sin conexión', 'Tus documentos y marcas se guardan en este dispositivo.')),
+      h('div', { class: 'acts' }, h('button', { class: 'btn', onclick: () => close(true) }, 'Empezar')));
+  }).then(() => saveSettings({ welcomed: true }));
 }
 
 // Documentos abiertos dentro del modo pantalla completa.
@@ -496,7 +505,7 @@ function coverHtml(b, withMore) {
     + (withMore ? `<span class="more" data-more="${b.id}" role="button" aria-label="Opciones">⋯</span>` : '');
 }
 // Colores de las carpetas (ramos)
-const FCOL = ['#E8836B', '#F5C25B', '#7FB7A4', '#8FB8E8', '#B9A6E8', '#D98BB0', '#9CC77A', '#E8C0A0'];
+const FCOL = ['#F0A24B', '#E5707E', '#8B7CF0', '#4FB3BF', '#5CB88A', '#D977C5', '#6FA0F5', '#B4A58A'];
 const folderColor = (f) => f.color || FCOL[Math.max(S.folders.indexOf(f), 0) % FCOL.length];
 const booksIn = (id) => S.books.filter((b) => (id === 'none' ? !b.folder : b.folder === id));
 const avgProg = (books) => (books.length ? Math.round(books.reduce((a, b) => a + (b.progress || 0), 0) / books.length * 100) : 0);
@@ -542,7 +551,7 @@ function renderSide() {
     h('i', { class: 'dot', style: `background:${color}` }), h('span', { class: 'si-t' }, name), h('span', { class: 'si-n' }, String(n)));
   const un = booksIn('none').length;
   side.replaceChildren(
-    h('div', { class: 'side-brand' }, 'Lumen'),
+    h('div', { class: 'side-brand' }, h('span', { html: LOGO, style: 'display:grid' }), 'Lumen'),
     item(I.book, 'Biblioteca', onBooks && S.lib.folder === 'all' && !S.lib.q, () => toBooks('all'), S.books.length || ''),
     item(I.marker, 'Subrayados', S.libTab === 'hls', () => { S.libTab = 'hls'; renderLibrary(); $('#libMain').scrollTop = 0; }),
     item(I.bulb, 'Feynman', S.libTab === 'fey', () => { S.libTab = 'fey'; renderLibrary(); $('#libMain').scrollTop = 0; }, due || ''),
@@ -591,7 +600,7 @@ function docRow(b) {
   const pr = Math.round((b.progress || 0) * 100);
   const meta = [FMT[b.format], b.pages ? plural(b.pages, 'pág.', 'págs.') : '', TAGS[b.tag], ago(b.lastRead)].filter(Boolean).join(' · ');
   return h('div', { class: 'card row' + (S.sel.has(b.id) ? ' sel' : ''), draggable: dragAttr(), 'data-id': b.id, html:
-    `<button class="rowbtn" data-open="${b.id}"><span class="rthumb">${coverHtml(b)}</span><span class="rbody"><span class="rt">${esc(b.title)}</span><span class="rm">${esc(meta)}</span><span class="bar"><i style="width:${pr}%"></i></span></span><span class="rp">${b.done ? '✓' : b.lastRead > 1 ? pr + ' %' : 'Nuevo'}</span></button>
+    `<button class="rowbtn" data-open="${b.id}"><span class="rthumb">${coverHtml(b)}</span><span class="rbody"><span class="rtt">${esc(b.title)}</span><span class="rm">${esc(meta)}</span><span class="bar"><i style="width:${pr}%"></i></span></span><span class="rp">${b.done ? '✓' : b.lastRead > 1 ? pr + ' %' : 'Nuevo'}</span></button>
      <span class="more" data-more="${b.id}" role="button" aria-label="Opciones">⋯</span><i class="ck" aria-hidden="true">✓</i>` });
 }
 
@@ -620,6 +629,7 @@ function renderLibrary() {
   $('#hlAll').hidden = S.libTab !== 'hls';
   $('#feyAll').hidden = S.libTab !== 'fey';
   document.querySelectorAll('#libnav button').forEach((b) => b.classList.toggle('on', b.dataset.t === S.libTab));
+  $('#libnav [data-t="fey"]').dataset.badge = S.fey.some((c) => c.due <= Date.now()) ? '1' : '';
   $('#pageTitle').textContent = S.libTab === 'hls' ? 'Subrayados' : S.libTab === 'fey' ? 'Feynman' : innerWidth >= 900 ? 'Biblioteca' : 'Lumen';
   $('#hello').hidden = !(S.libTab === 'books' && S.lib.folder === 'all' && !S.lib.q);
   renderSide();
@@ -644,10 +654,10 @@ function renderLibrary() {
   const scope = q ? S.books : booksIn(folder);
   const toRoot = () => { S.lib.folder = 'all'; S.lib.q = ''; $('#q').value = ''; renderLibrary(); $('#libMain').scrollTop = 0; };
   head.replaceChildren(h('div', { class: 'fv-head' },
-    h('button', { class: 'back', onclick: toRoot }, '‹ Biblioteca'),
+    h('button', { class: 'back', onclick: toRoot, html: `${I.chevronL}<span>Biblioteca</span>` }),
     h('div', { class: 'fv-title' }, q ? null : h('i', { class: 'dot', style: `background:${cur ? folderColor(cur) : 'var(--mut)'}` }), h('h2', {}, q ? `Resultados para “${q}”` : cur ? cur.name : 'Sin carpeta')),
     h('div', { class: 'sub fv-sub' }, q ? '' : `${plural(scope.length, 'documento', 'documentos')} · ${avgProg(scope)} % de avance promedio`),
-    cur && !q ? h('button', { class: 'ib', 'aria-label': 'Opciones de la carpeta', html: '⋯', onclick: () => folderMenu(cur) }) : null));
+    cur && !q ? h('button', { class: 'ib', 'aria-label': 'Opciones de la carpeta', html: I.more, onclick: () => folderMenu(cur) }) : null));
   const seg = h('div', { class: 'seg2', role: 'tablist' }, ...[['all', 'Todos'], ['estudio', 'Estudio'], ['lectura', 'Lectura']].map(([k, l]) => h('button', { class: tag === k ? 'on' : '', onclick: () => { S.lib.tag = k; renderLibrary(); } }, l)));
   const sel = (label, opts, val, fn) => { const x = h('select', { 'aria-label': label, onchange: (e) => fn(e.target.value) }, ...opts.map(([k, l]) => h('option', { value: k }, l))); x.value = val; return x; };
   const fmtSel = sel('Formato', [['all', 'Todos los formatos'], ['pdf', 'PDF'], ['docx', 'Word'], ['epub', 'EPUB'], ['txt', 'Texto']], fmt, (v) => { S.lib.fmt = v; renderLibrary(); });
@@ -961,9 +971,11 @@ function renderBar() {
   if (!v || S.screen !== 'reader') return;
   const seek = $('#seek');
   if (document.activeElement !== seek) seek.value = Math.round((v.kind === 'pdf' || v.paged ? v.page() / Math.max((v.pgs?.length || v.secs.length) - 1, 1) : v.ratio()) * 1000);
+  seek.style.setProperty('--pos', (seek.value / 10) + '%');
   $('#plabel').textContent = v.label();
+  $('#moreBtn').classList.toggle('on', !!S.timer || !!S.tts || settings.auto);
   const n = hlList(v.book.id).length;
-  $('#hlN').textContent = n ? `Subrayados · ${n}` : 'Subrayados';
+  $('#hlN').parentElement.dataset.n = n || '';
   $('#markBtn').classList.toggle('on', settings.auto);
   $('#bmBtn').classList.toggle('on', !!currentMark(v));
 }
@@ -971,6 +983,7 @@ function renderBar() {
 // ---------- paneles laterales / hojas ----------
 function openPanel(name) {
   if (S.panel === name) return closePanel();
+  setDock(false);
   S.panel = name;
   renderPanel();
   $('#panel').classList.add('open');
@@ -1079,14 +1092,15 @@ function renderCfg(box, v) {
     if ('pdfZoom' in patch) S.views.forEach((x) => x.kind === 'pdf' && x.relayout());
     renderCfg(box, activeView());
   };
-  const themes = { auto: ['Auto', 'linear-gradient(135deg,#F6F1E7 50%,#14110D 50%)', '#B56A00'], papel: ['Papel', '#F6F1E7', '#1F1B16'], sepia: ['Sepia', '#E9D9B8', '#3B2D16'], noche: ['Noche', '#14110D', '#E6DDCB'], oled: ['OLED', '#000', '#D8D2C4'] };
+  const themes = { noche: ['Noche', '#0A0D18', '#EBEDF7'], dia: ['Día', '#F4F6FA', '#0F1B2D'], papel: ['Papel', '#F6F1E7', '#2A2118'], sepia: ['Sepia', '#E9D9B8', '#3B2D16'], oled: ['OLED', '#000', '#D8D2C4'], auto: ['Automático', 'linear-gradient(135deg,#F4F6FA 50%,#0A0D18 50%)', '#6F7694'] };
   const slider = (min, max, step, val, fn) => { const r = h('input', { type: 'range', min, max, step }); r.value = val; r.addEventListener('input', () => fn(+r.value)); return r; };
   const kids = [h('div', { class: 'ph' }, h('h2', {}, 'Ajustes'))];
   kids.push(h('div', { class: 'lbl' }, 'Tema'),
-    h('div', { class: 'themes' }, ...Object.entries(themes).map(([k, [l, bg, fg]]) => h('button', { class: 'th' + (settings.theme === k ? ' on' : ''), style: `background:${bg};color:${fg}`, onclick: () => apply({ theme: k }) }, l))));
+    h('div', { class: 'themes' }, ...Object.entries(themes).map(([k, [l, bg, fg]]) => h('button', { class: 'th' + (settings.theme === k ? ' on' : ''), onclick: () => apply({ theme: k }) },
+      h('i', { style: `background:${bg};color:${fg}${k === 'oled' || k === 'noche' ? ';box-shadow:inset 0 0 0 1px rgba(173,186,255,.2)' : ''}` }, 'Aa lectura'), l))));
   kids.push(h('div', { class: 'lbl' }, 'Tamaño de letra', h('b', {}, settings.size + ' px')),
     slider(12, 44, 1, settings.size, (n) => { saveSettings({ size: n }); $('#panelBody .lbl b').textContent = n + ' px'; }));
-  kids.push(h('div', { class: 'lbl' }, 'Tipografía'), seg([['serif', 'Serif'], ['sans', 'Sans'], ['dislexia', 'Legible']], settings.font, (k) => apply({ font: k })));
+  kids.push(h('div', { class: 'lbl' }, 'Tipografía'), seg([['serif', 'Newsreader'], ['literata', 'Literata'], ['sans', 'Geist'], ['dislexia', 'Legible']], settings.font, (k) => apply({ font: k })));
   kids.push(h('div', { class: 'lbl' }, 'Interlineado'), slider(1.3, 2.2, 0.05, settings.lh, (n) => saveSettings({ lh: n })));
   kids.push(h('div', { class: 'lbl' }, 'Ancho del texto'), seg([['estrecho', 'Estrecho'], ['medio', 'Medio'], ['ancho', 'Ancho']], settings.width, (k) => apply({ width: k })));
   if (v?.book.format === 'pdf') {
@@ -1923,7 +1937,7 @@ export async function start() {
   $('#app').innerHTML = `
 <div id="shell">
   <header id="top">
-    <button class="ib" id="homeBtn" aria-label="Biblioteca">${I.book}</button>
+    <button class="ib" id="homeBtn" aria-label="Biblioteca">${LOGO}</button>
     <div id="tabs" role="tablist"></div>
     <button class="ib split-only" id="splitBtn" aria-label="Dividir pantalla">${I.split}</button>
     <button class="btn" id="installBtn" hidden>${I.download}<span>Instalar app</span></button>
@@ -1965,23 +1979,27 @@ export async function start() {
       <div id="ttsBar" hidden><button id="ttsPlay" class="ib" aria-label="Pausar o seguir"></button><button id="ttsStop" class="ib" aria-label="Detener lectura">${I.stop}</button><button id="ttsSpeed" class="chip" aria-label="Velocidad de lectura"></button><button id="ttsVoice" class="chip" aria-label="Elegir voz">Voz</button><span id="ttsLabel"></span></div>
       <div id="loading" hidden><div><div class="spin"></div><span id="loadtxt"></span></div></div>
     </main>
-    <aside id="panel" aria-label="Panel"><div class="grab"></div><div id="panelBody"></div></aside>
+    <aside id="panel" aria-label="Panel"><div class="grab"></div><button class="ib" id="panelClose" aria-label="Cerrar panel">${I.close}</button><div id="panelBody"></div></aside>
   </div>
   <footer id="bar" hidden>
-    <div class="row"><input id="seek" type="range" min="0" max="1000" aria-label="Posición en el documento"><span id="plabel"></span><button class="ib" id="bmBtn" aria-label="Marcar esta página">${I.bookmark}</button><button class="ib" id="barHide" aria-label="Ocultar barra inferior" title="Ocultar barra (tecla B)">${I.chevron}</button></div>
+    <div class="row"><input id="seek" type="range" min="0" max="1000" aria-label="Posición en el documento"><span id="plabel"></span><button class="ib" id="bmBtn" aria-label="Marcar esta página">${I.bookmark}</button></div>
     <div class="tools">
-      <button data-p="toc">${I.list}Contenido</button>
-      <button data-p="hl">${I.marker}<span id="hlN">Subrayados</span></button>
-      <button data-p="search">${I.search}Buscar</button>
-      <button id="markBtn" aria-label="Marcador automático">${I.marker}Marcador</button>
-      <button data-p="cfg">${I.type}Ajustes</button>
-      <button id="focusBtn" aria-label="Pantalla completa">${I.expand}Completa</button>
-      <button id="ttsBtn" aria-label="Leer en voz alta">${I.voice}Voz</button>
-      <button id="timerBtn" aria-label="Temporizador de estudio">${I.timer}<span id="timerTxt">Tiempo</span></button>
+      <button data-p="toc" aria-label="Índice">${I.list}Índice</button>
+      <button data-p="hl" aria-label="Subrayados">${I.marker}<span id="hlN">Marcas</span></button>
+      <button data-p="search" aria-label="Buscar">${I.search}Buscar</button>
       <button id="feyBtn" aria-label="Pausa Feynman">${I.bulb}Feynman</button>
+      <button data-p="cfg" aria-label="Ajustes de texto">${I.type}Texto</button>
+      <button id="moreBtn" aria-haspopup="true" aria-expanded="false" aria-label="Más opciones">${I.more}Más</button>
+    </div>
+    <div id="morePop" hidden>
+      <button id="markBtn">${I.marker}Subrayar al seleccionar</button>
+      <button id="ttsBtn">${I.voice}Leer en voz alta</button>
+      <button id="timerBtn">${I.timer}<span id="timerTxt">Tiempo</span></button>
+      <button id="focusBtn">${I.expand}Pantalla completa</button>
+      <button id="barHide">${I.chevron}Ocultar barra</button>
     </div>
   </footer>
-  <nav id="libnav"><button data-t="books" class="on">Biblioteca</button><button data-t="hls">Subrayados</button><button data-t="fey">Feynman</button></nav>
+  <nav id="libnav"><button data-t="books" class="on">${I.book}<span>Biblioteca</span></button><button data-t="hls">${I.marker}<span>Subrayados</span></button><button data-t="fey">${I.bulb}<span>Feynman</span></button></nav>
 </div>
 <input type="file" id="file" multiple hidden accept=".pdf,.docx,.epub,.txt,.md,.html,.htm,application/pdf">
 <input type="file" id="bk" hidden accept=".json,application/json">
@@ -2010,6 +2028,8 @@ export async function start() {
   $('#installBtn').onclick = doInstall;
   addEventListener('lumen-theme', () => S.views.forEach((v) => v.kind === 'pdf' && v.relayout?.(true)));
   $('#barHide').onclick = () => setBarHidden(true);
+  $('#panelClose').onclick = closePanel;
+  $('#views').addEventListener('scroll', dockOnScroll, true);
   $('#barShow').onclick = () => setBarHidden(false);
   $('#exitFocus').onclick = () => setFocus(false);
   $('#focusDocs').onclick = (e) => { e.stopPropagation(); toggleFocusList(); };
@@ -2097,6 +2117,8 @@ export async function start() {
   $('#bar').onclick = (e) => {
     const b = e.target.closest('button');
     if (!b) return;
+    if (b.id === 'moreBtn') { const p = $('#morePop'); p.hidden = !p.hidden; b.setAttribute('aria-expanded', String(!p.hidden)); return; }
+    if (b.closest('#morePop')) { $('#morePop').hidden = true; $('#moreBtn').setAttribute('aria-expanded', 'false'); }
     if (b.dataset.p) openPanel(b.dataset.p);
     else if (b.id === 'focusBtn') setFocus(true);
     else if (b.id === 'bmBtn') toggleBookmark();
@@ -2105,7 +2127,7 @@ export async function start() {
     else if (b.id === 'feyBtn') openFeynman();
     else if (b.id === 'markBtn') { saveSettings({ auto: !settings.auto }); toast(settings.auto ? 'Marcador automático activado' : 'Marcador automático apagado'); renderBar(); }
   };
-  $('#seek').oninput = (e) => { const v = activeView(); if (v) v.seek(e.target.value / 1000); };
+  $('#seek').oninput = (e) => { e.target.style.setProperty('--pos', (e.target.value / 10) + '%'); const v = activeView(); if (v) v.seek(e.target.value / 1000); };
   $('#ttsPlay').onclick = ttsPause;
   $('#ttsStop').onclick = stopTts;
   $('#ttsSpeed').onclick = ttsRate;
@@ -2114,13 +2136,14 @@ export async function start() {
   $('#views').addEventListener('click', (e) => {
     const skip = S.skipTap;
     S.skipTap = false;
-    if (!settings.tapTurn || skip || !getSelection().isCollapsed || Date.now() - (S.lastPinch || 0) < 500) return;
+    if (skip || !getSelection().isCollapsed || Date.now() - (S.lastPinch || 0) < 500) return;
     const vEl = e.target.closest('.view');
     if (!vEl || e.target.closest('mark.hl, a, button')) return;
     const r = vEl.getBoundingClientRect();
     const x = (e.clientX - r.left) / r.width;
-    if (x < 0.18) turnPage(S.views.get(vEl.dataset.id), -1);
-    else if (x > 0.82) turnPage(S.views.get(vEl.dataset.id), 1);
+    if (settings.tapTurn && x < 0.18) turnPage(S.views.get(vEl.dataset.id), -1);
+    else if (settings.tapTurn && x > 0.82) turnPage(S.views.get(vEl.dataset.id), 1);
+    else if (matchMedia('(pointer: coarse)').matches) setDock(!$('#bar').classList.contains('away'));
   });
   $('#selbar').addEventListener('pointerdown', () => { S.barTouched = true; clearTimeout(hideT); });
   $('#selbar').addEventListener('click', onBarClick);
@@ -2239,5 +2262,6 @@ export async function start() {
     CapApp.addListener('resume', takeIncoming);
     takeIncoming();
   }
+  if (!S.books.length && !settings.welcomed) setTimeout(showWelcome, 500);
   return true;
 }

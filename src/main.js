@@ -1,8 +1,9 @@
-import '@fontsource-variable/fraunces';
-import '@fontsource-variable/instrument-sans';
+import '@fontsource-variable/newsreader/opsz.css';
+import '@fontsource-variable/geist';
+import '@fontsource-variable/literata';
 import '@fontsource/atkinson-hyperlegible/400.css';
 import '@fontsource/atkinson-hyperlegible/700.css';
-import './styles.css';
+import './design.css';
 import { start } from './app.js';
 import { applyPendingOnColdStart, notifyReady, startUpdates } from './updater.js';
 

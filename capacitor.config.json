@@ -2,7 +2,7 @@
   "appId": "com.lumen.reader",
   "appName": "Lumen",
   "webDir": "dist",
-  "android": { "backgroundColor": "#14110D" },
+  "android": { "backgroundColor": "#0A0D18" },
   "plugins": {
     "CapacitorUpdater": {
       "autoUpdate": false,
