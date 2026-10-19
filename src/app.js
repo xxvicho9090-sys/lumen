@@ -43,6 +43,8 @@ const I = {
   expand: svg('<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>'),
   chevron: svg('<path d="m6 9 6 6 6-6"/>'),
   bulb: svg('<path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2.1h5c0-.9.4-1.6 1-2.1A6 6 0 0 0 12 3z"/>'),
+  grid: svg('<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>'),
+  rows: svg('<path d="M4 6h16M4 12h16M4 18h16"/>'),
   bookmark: svg('<path d="M6 4h12v16l-6-4-6 4z"/>'),
   timer: svg('<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2M9 2h6"/>'),
   voice: svg('<path d="M4 10v4h4l5 4V6L8 10zM16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"/>'),
@@ -489,33 +491,128 @@ const activeOrAny = (bookId) => S.views.get(bookId);
 function coverHtml(b, withMore) {
   const col = PALETTE[hash(b.title) % PALETTE.length];
   const inner = b.cover ? `<img src="${b.cover}" alt="">` : `<div class="t" style="background:${col}">${esc(b.title)}</div>`;
-  return `<div class="cover">${inner}<i class="tg" style="background:var(--c-${b.tag})"></i><span class="fmt">${FMT[b.format]}</span></div>`
+  const pr = Math.round((b.progress || 0) * 100);
+  return `<div class="cover">${inner}<i class="tg" style="background:var(--c-${b.tag})"></i><span class="fmt">${FMT[b.format]}</span>${pr > 1 ? `<i class="cprog"><b style="width:${pr}%"></b></i>` : ''}</div>`
     + (withMore ? `<span class="more" data-more="${b.id}" role="button" aria-label="Opciones">⋯</span>` : '');
 }
+// Colores de las carpetas (ramos)
+const FCOL = ['#E8836B', '#F5C25B', '#7FB7A4', '#8FB8E8', '#B9A6E8', '#D98BB0', '#9CC77A', '#E8C0A0'];
+const folderColor = (f) => f.color || FCOL[Math.max(S.folders.indexOf(f), 0) % FCOL.length];
+const booksIn = (id) => S.books.filter((b) => (id === 'none' ? !b.folder : b.folder === id));
+const avgProg = (books) => (books.length ? Math.round(books.reduce((a, b) => a + (b.progress || 0), 0) / books.length * 100) : 0);
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+function ago(ts) {
+  if (!ts || ts < 10) return '';
+  const d = Math.floor((Date.now() - ts) / 864e5);
+  return d <= 0 ? 'hoy' : d === 1 ? 'ayer' : d < 30 ? `hace ${d} días` : fmtDay(ts);
+}
+const pageHead = (title, sub) => h('div', { class: 'page-head' }, h('h2', {}, title), sub ? h('div', { class: 'sub' }, sub) : null);
+const EMPTY_SVG = '<svg viewBox="0 0 160 120" width="150" height="112" aria-hidden="true"><path d="M20 52V30a8 8 0 0 1 8-8h32l10 12h62a8 8 0 0 1 8 8v60a8 8 0 0 1-8 8H28a8 8 0 0 1-8-8z" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round" opacity=".55"/><path d="M80 62v32M64 78h32" stroke="var(--acc)" stroke-width="5" stroke-linecap="round"/></svg>';
+const emptyState = (title, text, cta, fn) => h('div', { class: 'empty2', style: 'grid-column:1/-1' }, h('div', { html: EMPTY_SVG }), h('b', {}, title), h('p', {}, text), cta ? h('button', { class: 'btn', onclick: fn }, cta) : null);
+
+// Carpetas: crear / editar con nombre y color
+function folderEdit(f) {
+  return modal((box, close) => {
+    let color = f ? folderColor(f) : FCOL[S.folders.length % FCOL.length];
+    const inp = h('input', { placeholder: 'Ej.: Derecho Civil', maxlength: 40 });
+    inp.value = f?.name || '';
+    const sw = h('div', { class: 'swatches' });
+    const paint = () => sw.replaceChildren(...FCOL.map((c) => h('button', { class: 'sw' + (c === color ? ' on' : ''), style: `background:${c}`, 'aria-label': 'Color de la carpeta', onclick: () => { color = c; paint(); } })));
+    paint();
+    const ok = () => { if (inp.value.trim()) close({ name: inp.value.trim().slice(0, 40), color }); else inp.focus(); };
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') ok(); });
+    box.append(h('h3', {}, f ? 'Editar carpeta' : 'Nueva carpeta'), inp, h('div', { class: 'lbl' }, 'Color'), sw,
+      h('div', { class: 'acts' }, h('button', { class: 'btn ghost', onclick: () => close(null) }, 'Cancelar'), h('button', { class: 'btn', onclick: ok }, 'Guardar')));
+    setTimeout(() => inp.focus(), 80);
+  });
+}
+async function folderMenu(f) {
+  const act = await choose(f.name, [{ label: 'Editar nombre y color', value: 'edit' }, { label: 'Eliminar carpeta', sub: 'Los documentos no se borran: quedan sin carpeta', value: 'del', danger: true }]);
+  if (act === 'edit') renameFolder(f); else if (act === 'del') deleteFolder(f);
+}
+
+function renderSide() {
+  const side = $('#libSide');
+  const due = S.fey.filter((c) => c.due <= Date.now()).length;
+  const onBooks = S.libTab === 'books';
+  const toBooks = (folder) => { S.libTab = 'books'; S.lib.folder = folder; S.lib.q = ''; $('#q').value = ''; renderLibrary(); $('#libMain').scrollTop = 0; };
+  const item = (icon, label, on, fn, badge) => h('button', { class: 'side-i' + (on ? ' on' : ''), onclick: fn },
+    h('span', { class: 'si-ic', html: icon }), h('span', { class: 'si-t' }, label), badge ? h('span', { class: 'si-b' }, String(badge)) : null);
+  const fol = (id, name, color, n) => h('button', { class: 'side-f' + (onBooks && S.lib.folder === id && !S.lib.q ? ' on' : ''), 'data-folder': id, onclick: () => toBooks(id) },
+    h('i', { class: 'dot', style: `background:${color}` }), h('span', { class: 'si-t' }, name), h('span', { class: 'si-n' }, String(n)));
+  const un = booksIn('none').length;
+  side.replaceChildren(
+    h('div', { class: 'side-brand' }, 'Lumen'),
+    item(I.book, 'Biblioteca', onBooks && S.lib.folder === 'all' && !S.lib.q, () => toBooks('all'), S.books.length || ''),
+    item(I.marker, 'Subrayados', S.libTab === 'hls', () => { S.libTab = 'hls'; renderLibrary(); $('#libMain').scrollTop = 0; }),
+    item(I.bulb, 'Feynman', S.libTab === 'fey', () => { S.libTab = 'fey'; renderLibrary(); $('#libMain').scrollTop = 0; }, due || ''),
+    h('div', { class: 'side-sec' }, 'Ramos'),
+    ...S.folders.map((f) => fol(f.id, f.name, folderColor(f), booksIn(f.id).length)),
+    un && S.folders.length ? fol('none', 'Sin carpeta', 'var(--mut)', un) : null,
+    h('button', { class: 'side-add', onclick: () => newFolder(true) }, '+ Nueva carpeta'));
+}
+
 function renderFolderGrid() {
   const grid = $('#grid');
-  const card = (id, name, books) => {
+  const card = (id, name, books, color) => {
     const covers = books.filter((b) => b.cover).slice(0, 3);
-    const prog = books.length ? Math.round(books.reduce((a, b) => a + (b.progress || 0), 0) / books.length * 100) : 0;
-    return h('button', { class: 'fold', 'data-folder': id, html:
-      `<div class="fshape"><i class="ftab"></i><div class="fcov">${covers.map((c) => `<img src="${c.cover}" alt="">`).join('')}</div></div>
-       <div class="fn">${esc(name)}</div><div class="pc">${books.length} ${books.length === 1 ? 'documento' : 'documentos'}${books.length ? ` · ${prog} %` : ''}</div>` });
+    const last = Math.max(0, ...books.map((b) => b.lastRead || 0));
+    return h('button', { class: 'fold', 'data-folder': id, style: `--fc:${color}`, html:
+      `<div class="fshape"><i class="ftab"></i><div class="fcov">${covers.map((c) => `<img src="${c.cover}" alt="">`).join('')}${covers.length ? '' : `<span class="fempty">${books.length ? 'Sin portada' : 'Vacía'}</span>`}</div></div>
+       <div class="fmeta"><div class="fn">${esc(name)}</div><div class="pc">${plural(books.length, 'documento', 'documentos')}${ago(last) ? ' · ' + ago(last) : ''}</div><div class="bar mini"><i style="width:${avgProg(books)}%"></i></div></div>` });
   };
-  const cards = S.folders.map((f) => card(f.id, f.name, S.books.filter((b) => b.folder === f.id)));
-  const un = S.books.filter((b) => !b.folder);
-  if (un.length) cards.push(card('none', 'Sin carpeta', un));
-  cards.push(h('button', { class: 'fold add', onclick: () => newFolder(true), html: '<div class="fshape"><i class="ftab"></i><div class="plus">+</div></div><div class="fn">Nueva carpeta</div><div class="pc">Un ramo, un curso…</div>' }));
-  const intro = !S.folders.length ? [h('div', { class: 'empty', style: 'grid-column:1/-1', html: S.books.length
-    ? '<b>Organiza tus documentos</b>Crea una carpeta por cada ramo y muévelos con el menú “⋯” de cada documento.'
-    : '<b>Empieza creando una carpeta</b>Una por ramo. Luego toca “Añadir documentos” y elige <b style="display:inline;font:inherit;color:inherit">varios a la vez</b> (mantén presionado un archivo para seleccionar más).<br>En laptop también puedes arrastrar muchos archivos o una carpeta entera a esta ventana.' })] : [];
-  grid.replaceChildren(...intro, ...cards);
+  const cards = S.folders.map((f) => card(f.id, f.name, booksIn(f.id), folderColor(f)));
+  const un = booksIn('none');
+  if (un.length) cards.push(card('none', 'Sin carpeta', un, 'var(--mut)'));
+  if (!S.folders.length && !S.books.length) {
+    grid.replaceChildren(emptyState('Crea tu primera carpeta', 'Una por cada ramo. Luego añade tus PDF, Word o EPUB, varios a la vez. En laptop puedes arrastrar archivos o una carpeta entera a esta ventana.', 'Nueva carpeta', () => newFolder(true)));
+    return;
+  }
+  cards.push(h('button', { class: 'fold add', onclick: () => newFolder(true), html: '<div class="fshape"><i class="ftab"></i><div class="plus">+</div></div><div class="fmeta"><div class="fn">Nueva carpeta</div><div class="pc">Un ramo, un curso…</div></div>' }));
+  grid.replaceChildren(...cards);
 }
+
 const SORTS = {
   recent: (a, b) => (b.lastRead || b.added) - (a.lastRead || a.added),
   title: (a, b) => a.title.localeCompare(b.title, 'es'),
   progress: (a, b) => (b.progress || 0) - (a.progress || 0),
   added: (a, b) => b.added - a.added,
 };
+const dragAttr = () => (matchMedia('(pointer: fine)').matches ? 'true' : 'false');
+function docCard(b) {
+  const f = S.folders.find((x) => x.id === b.folder);
+  const pr = Math.round((b.progress || 0) * 100);
+  return h('div', { class: 'card' + (S.sel.has(b.id) ? ' sel' : ''), draggable: dragAttr(), 'data-id': b.id, html:
+    `<button class="cardbtn" data-open="${b.id}">${coverHtml(b)}<div class="nm">${esc(b.title)}</div>
+     <div class="pc">${b.done ? '✓ Terminado' : b.lastRead > 1 ? pr + ' %' : 'Nuevo'} · ${esc(f?.name || TAGS[b.tag])}</div></button>
+     <span class="more" data-more="${b.id}" role="button" aria-label="Opciones">⋯</span><i class="ck" aria-hidden="true">✓</i>` });
+}
+function docRow(b) {
+  const pr = Math.round((b.progress || 0) * 100);
+  const meta = [FMT[b.format], b.pages ? plural(b.pages, 'pág.', 'págs.') : '', TAGS[b.tag], ago(b.lastRead)].filter(Boolean).join(' · ');
+  return h('div', { class: 'card row' + (S.sel.has(b.id) ? ' sel' : ''), draggable: dragAttr(), 'data-id': b.id, html:
+    `<button class="rowbtn" data-open="${b.id}"><span class="rthumb">${coverHtml(b)}</span><span class="rbody"><span class="rt">${esc(b.title)}</span><span class="rm">${esc(meta)}</span><span class="bar"><i style="width:${pr}%"></i></span></span><span class="rp">${b.done ? '✓' : b.lastRead > 1 ? pr + ' %' : 'Nuevo'}</span></button>
+     <span class="more" data-more="${b.id}" role="button" aria-label="Opciones">⋯</span><i class="ck" aria-hidden="true">✓</i>` });
+}
+
+// Panel de inicio: continuar leyendo + resumen del día
+function renderDash() {
+  const last = [...S.books].filter((b) => b.lastRead > 1).sort((a, b) => b.lastRead - a.lastRead)[0];
+  const cont = $('#cont');
+  cont.replaceChildren();
+  if (last) {
+    const f = S.folders.find((x) => x.id === last.folder);
+    const pr = Math.round((last.progress || 0) * 100);
+    const n = (S.hl.get(last.id) || []).length;
+    cont.append(h('button', { class: 'cont2', onclick: () => openBook(last.id), html:
+      `<div class="cover">${last.cover ? `<img src="${last.cover}" alt="">` : `<div class="t" style="background:${PALETTE[hash(last.title) % PALETTE.length]}">${esc(last.title)}</div>`}</div>
+       <div class="c2-body"><div class="eyebrow">Continuar leyendo</div><h3>${esc(last.title)}</h3>
+       <div class="sub">${esc([f?.name || TAGS[last.tag], FMT[last.format], n ? plural(n, 'subrayado', 'subrayados') : '', ago(last.lastRead)].filter(Boolean).join(' · '))}</div>
+       <div class="c2-prog"><div class="bar"><i style="width:${pr}%"></i></div><span>${pr} %</span></div></div><span class="c2-go">Retomar ›</span>` }));
+  }
+  renderStats();
+}
+
 function renderLibrary() {
   const hr = new Date().getHours();
   $('#hello').textContent = hr < 6 ? 'Buenas noches' : hr < 12 ? 'Buenos días' : hr < 20 ? 'Buenas tardes' : 'Buenas noches';
@@ -523,65 +620,60 @@ function renderLibrary() {
   $('#hlAll').hidden = S.libTab !== 'hls';
   $('#feyAll').hidden = S.libTab !== 'fey';
   document.querySelectorAll('#libnav button').forEach((b) => b.classList.toggle('on', b.dataset.t === S.libTab));
+  $('#pageTitle').textContent = S.libTab === 'hls' ? 'Subrayados' : S.libTab === 'fey' ? 'Feynman' : innerWidth >= 900 ? 'Biblioteca' : 'Lumen';
+  $('#hello').hidden = !(S.libTab === 'books' && S.lib.folder === 'all' && !S.lib.q);
+  renderSide();
   if (S.libTab === 'hls') return renderAllHl();
   if (S.libTab === 'fey') return renderFeyAll();
   const { tag, fmt, q, folder } = S.lib;
   const root = folder === 'all' && !q;
   if (root && S.selMode) { S.selMode = false; S.sel.clear(); updateSelBar(); }
-  if (root) renderStats(); else $('#stats').replaceChildren();
-  const last = [...S.books].filter((b) => b.lastRead).sort((a, b) => b.lastRead - a.lastRead)[0];
-  const cont = $('#cont');
-  cont.replaceChildren();
-  if (last && root) {
-    cont.append(h('button', { class: 'cont', onclick: () => openBook(last.id), html:
-      `<div class="cover" style="width:92px;flex:none">${last.cover ? `<img src="${last.cover}" alt="">` : `<div class="t" style="background:${PALETTE[hash(last.title) % PALETTE.length]}">${esc(last.title)}</div>`}</div>
-       <div class="meta"><div><div class="eyebrow">Continuar leyendo</div><h3>${esc(last.title)}</h3>
-       <div class="sub">${[S.folders.find((f) => f.id === last.folder)?.name || TAGS[last.tag], FMT[last.format], (() => { const n = (S.hl.get(last.id) || []).length; return n ? `${n} ${n === 1 ? 'subrayado' : 'subrayados'}` : ''; })()].filter(Boolean).join(' · ')}</div></div>
-       <div><div class="bar"><i style="width:${Math.round(last.progress * 100)}%"></i></div><div class="sub" style="margin-top:6px">${Math.round(last.progress * 100)} %</div></div></div>` }));
+  $('#dash').hidden = !(root && S.books.length);
+  if (root) renderDash(); else { $('#cont').replaceChildren(); $('#stats').replaceChildren(); }
+  const head = $('#folderHead'), tb = $('#toolbar'), grid = $('#grid');
+  grid.classList.toggle('fgrid', root);
+  grid.classList.toggle('lgrid', !root && settings.view === 'list');
+  if (root) {
+    const nf = S.folders.length;
+    head.replaceChildren(h('div', { class: 'sec-h' }, h('h2', {}, 'Mis ramos'), h('span', { class: 'sub' }, nf ? `${plural(nf, 'carpeta', 'carpetas')} · ${plural(S.books.length, 'documento', 'documentos')}` : '')));
+    tb.replaceChildren();
+    renderFolderGrid();
+    return;
   }
-  const chip = (label, on, fn) => h('button', { class: 'chip' + (on ? ' on' : ''), onclick: fn }, label);
-  const cnt = (id) => S.books.filter((b) => (id === 'none' ? !b.folder : b.folder === id)).length;
-  const unfiled = cnt('none');
-  $('#folderChips').replaceChildren();
   const cur = S.folders.find((f) => f.id === folder);
-  const back = h('button', { class: 'chip', onclick: () => { S.lib.folder = 'all'; renderLibrary(); $('#library').scrollTop = 0; } }, '‹ Carpetas');
-  $('#folderHead').replaceChildren(...(folder === 'all' ? [] : [h('div', { class: 'fhead' },
-    h('div', { style: 'display:flex;align-items:center;gap:12px;flex-wrap:wrap' }, back, h('b', {}, cur ? cur.name : 'Sin carpeta'), h('span', { class: 'sub' }, `${cnt(cur ? cur.id : 'none')} documentos`)),
-    cur ? h('div', { style: 'display:flex;gap:8px' }, h('button', { class: 'btn ghost', onclick: () => renameFolder(cur) }, 'Renombrar'), h('button', { class: 'btn ghost', onclick: () => deleteFolder(cur) }, 'Eliminar')) : null)]));
-  $('#tagChips').hidden = $('#fmtChips').hidden = root;
-  $('#grid').classList.toggle('fgrid', root);
-  if (root) { renderFolderGrid(); return; }
-  $('#tagChips').replaceChildren(
-    chip('Todos', tag === 'all', () => { S.lib.tag = 'all'; renderLibrary(); }),
-    chip('Estudio', tag === 'estudio', () => { S.lib.tag = 'estudio'; renderLibrary(); }),
-    chip('Lectura', tag === 'lectura', () => { S.lib.tag = 'lectura'; renderLibrary(); }));
-  const sortSel = h('select', { class: 'sortSel', 'aria-label': 'Ordenar biblioteca', onchange: (e) => { saveSettings({ sort: e.target.value }); renderLibrary(); } },
-    ...[['recent', 'Recientes'], ['title', 'Título A–Z'], ['progress', 'Más avanzados'], ['added', 'Añadidos']].map(([k, l]) => h('option', { value: k }, l)));
-  sortSel.value = settings.sort;
-  $('#fmtChips').replaceChildren(...[['all', 'Todo'], ['pdf', 'PDF'], ['docx', 'Word'], ['epub', 'EPUB'], ['txt', 'Texto']]
-    .map(([k, l]) => chip(l, fmt === k, () => { S.lib.fmt = k; renderLibrary(); })), sortSel,
-    chip(S.selMode ? '✓ Seleccionando' : 'Seleccionar', S.selMode, toggleSelMode));
+  const scope = q ? S.books : booksIn(folder);
+  const toRoot = () => { S.lib.folder = 'all'; S.lib.q = ''; $('#q').value = ''; renderLibrary(); $('#libMain').scrollTop = 0; };
+  head.replaceChildren(h('div', { class: 'fv-head' },
+    h('button', { class: 'back', onclick: toRoot }, '‹ Biblioteca'),
+    h('div', { class: 'fv-title' }, q ? null : h('i', { class: 'dot', style: `background:${cur ? folderColor(cur) : 'var(--mut)'}` }), h('h2', {}, q ? `Resultados para “${q}”` : cur ? cur.name : 'Sin carpeta')),
+    h('div', { class: 'sub fv-sub' }, q ? '' : `${plural(scope.length, 'documento', 'documentos')} · ${avgProg(scope)} % de avance promedio`),
+    cur && !q ? h('button', { class: 'ib', 'aria-label': 'Opciones de la carpeta', html: '⋯', onclick: () => folderMenu(cur) }) : null));
+  const seg = h('div', { class: 'seg2', role: 'tablist' }, ...[['all', 'Todos'], ['estudio', 'Estudio'], ['lectura', 'Lectura']].map(([k, l]) => h('button', { class: tag === k ? 'on' : '', onclick: () => { S.lib.tag = k; renderLibrary(); } }, l)));
+  const sel = (label, opts, val, fn) => { const x = h('select', { 'aria-label': label, onchange: (e) => fn(e.target.value) }, ...opts.map(([k, l]) => h('option', { value: k }, l))); x.value = val; return x; };
+  const fmtSel = sel('Formato', [['all', 'Todos los formatos'], ['pdf', 'PDF'], ['docx', 'Word'], ['epub', 'EPUB'], ['txt', 'Texto']], fmt, (v) => { S.lib.fmt = v; renderLibrary(); });
+  const sortSel = sel('Ordenar', [['recent', 'Recientes'], ['title', 'Título A–Z'], ['progress', 'Más avanzados'], ['added', 'Añadidos']], settings.sort, (v) => { saveSettings({ sort: v }); renderLibrary(); });
+  const vt = h('div', { class: 'vt' },
+    h('button', { class: settings.view !== 'list' ? 'on' : '', 'aria-label': 'Ver en cuadrícula', html: I.grid, onclick: () => { saveSettings({ view: 'grid' }); renderLibrary(); } }),
+    h('button', { class: settings.view === 'list' ? 'on' : '', 'aria-label': 'Ver en lista', html: I.rows, onclick: () => { saveSettings({ view: 'list' }); renderLibrary(); } }));
+  const selBtn = h('button', { class: 'chip' + (S.selMode ? ' on' : ''), onclick: toggleSelMode }, S.selMode ? '✓ Seleccionando' : 'Seleccionar');
+  tb.replaceChildren(h('div', { class: 'tb' }, seg, h('div', { class: 'tb-r' }, fmtSel, sortSel, vt, selBtn)));
   const fq = q.toLowerCase();
   const list = S.books.filter((b) => (folder === 'all' || (folder === 'none' ? !b.folder : b.folder === folder)) && (tag === 'all' || b.tag === tag) && (fmt === 'all' || b.format === fmt)
     && (!fq || (b.title + ' ' + b.author).toLowerCase().includes(fq)))
     .sort(SORTS[settings.sort] || SORTS.recent);
-  const grid = $('#grid');
   if (!list.length) {
-    grid.replaceChildren(h('div', { class: 'empty', style: 'grid-column:1/-1', html: S.books.length
-      ? '<b>Nada por aquí</b>Prueba con otro filtro o búsqueda.'
-      : '<b>Tu biblioteca está vacía</b>Toca “Añadir documentos” y elige varios PDF, Word o EPUB a la vez.<br>En laptop también puedes arrastrarlos a esta ventana.' }));
+    grid.replaceChildren(scope.length ? emptyState('Nada con esos filtros', 'Prueba con otro tipo, formato o búsqueda.', 'Quitar filtros', () => { S.lib.tag = 'all'; S.lib.fmt = 'all'; renderLibrary(); })
+      : q ? emptyState('Sin resultados', 'No hay documentos con ese nombre.', null)
+      : emptyState('Esta carpeta está vacía', 'Añade documentos aquí: puedes elegir varios a la vez o arrastrarlos desde tu computador.', 'Añadir documentos', () => $('#fab').click()));
     return;
   }
-  grid.replaceChildren(...list.map((b) => h('div', { class: 'card' + (S.sel.has(b.id) ? ' sel' : ''), draggable: matchMedia('(pointer: fine)').matches ? 'true' : 'false', 'data-id': b.id, html:
-    `<button style="display:block;width:100%;text-align:left" data-open="${b.id}">${coverHtml(b)}<div class="nm">${esc(b.title)}</div>
-     <div class="pc">${b.done ? '✓ Terminado' : b.lastRead ? Math.round(b.progress * 100) + ' %' : 'Nuevo'} · ${S.folders.find((f) => f.id === b.folder)?.name || TAGS[b.tag]}</div></button>
-     <span class="more" data-more="${b.id}" role="button" aria-label="Opciones">⋯</span><i class="ck" aria-hidden="true">✓</i>` })));
+  grid.replaceChildren(...list.map((b) => (settings.view === 'list' ? docRow(b) : docCard(b))));
 }
 async function renderAllHl() {
   const all = await DB.allHl();
   const box = $('#hlAll');
   if (!all.length) { box.innerHTML = '<div class="empty"><b>Aún no hay subrayados</b>Abre un libro, selecciona texto y elige un color.</div>'; return; }
-  box.replaceChildren();
+  box.replaceChildren(pageHead('Subrayados', plural(all.length, 'subrayado guardado', 'subrayados guardados')));
   const byBook = new Map();
   all.forEach((x) => { if (!byBook.has(x.bookId)) byBook.set(x.bookId, []); byBook.get(x.bookId).push(x); });
   for (const [bid, list] of byBook) {
@@ -1141,19 +1233,20 @@ function hideDropStrip() { $('#dropStrip').hidden = true; }
 // ---------- carpetas ----------
 const saveFolders = () => DB.kvSet('folders', S.folders);
 async function newFolder(select) {
-  const n = await askText('Nueva carpeta', '', false, 'Ej.: Derecho Civil');
-  if (!n || !n.trim()) return null;
-  const f = { id: DB.uid(), name: n.trim().slice(0, 40) };
+  const r = await folderEdit(null);
+  if (!r) return null;
+  const f = { id: DB.uid(), name: r.name, color: r.color };
   S.folders.push(f);
   await saveFolders();
-  if (select) S.lib.folder = f.id;
+  if (select) { S.libTab = 'books'; S.lib.folder = f.id; S.lib.q = ''; const q = $('#q'); if (q) q.value = ''; }
   renderLibrary();
   return f;
 }
 async function renameFolder(f) {
-  const n = await askText('Nombre de la carpeta', f.name);
-  if (!n || !n.trim()) return;
-  f.name = n.trim().slice(0, 40);
+  const r = await folderEdit(f);
+  if (!r) return;
+  f.name = r.name;
+  f.color = r.color;
   await saveFolders();
   renderLibrary();
 }
@@ -1274,10 +1367,15 @@ function renderStats() {
   const box = $('#stats');
   if (!S.books.length) { box.replaceChildren(); return; }
   const today = S.stats.days[dayKey()] || 0;
+  const goal = settings.goal * 60;
   const st = streak();
-  box.innerHTML = `<div class="stats"><div class="ring" style="--p:${Math.min(today / (settings.goal * 60), 1) * 100}"><span>${Math.round(today / 60)}</span></div>
-    <div><div class="eyebrow">Lectura de hoy</div><div><b>${fmtMin(today)}</b> de ${settings.goal} min${st ? ` · racha de <b>${st} ${st === 1 ? 'día' : 'días'}</b>` : ''}</div>
-    <div class="sub">Esta semana: ${fmtMin(weekSecs())} · ${(S.stats.pomos || {})[dayKey()] || 0} pomodoros hoy${S.fey.filter((c) => c.due <= Date.now()).length ? ` · ${S.fey.filter((c) => c.due <= Date.now()).length} tarjetas Feynman por repasar` : ''}</div></div></div>`;
+  const due = S.fey.filter((c) => c.due <= Date.now()).length;
+  const pomos = (S.stats.pomos || {})[dayKey()] || 0;
+  box.innerHTML = `<div class="today"><div class="t-top"><div class="ring" style="--p:${Math.min(today / goal, 1) * 100}"><span>${Math.round(today / 60)}</span></div>
+    <div><div class="eyebrow">Hoy</div><div class="t-main"><b>${fmtMin(today)}</b> de ${settings.goal} min</div><div class="sub">Esta semana: ${fmtMin(weekSecs())}</div></div></div>
+    <div class="t-tiles"><div class="tile"><b>${st}</b><span>${st === 1 ? 'día' : 'días'} de racha</span></div><div class="tile"><b>${pomos}</b><span>${pomos === 1 ? 'pomodoro' : 'pomodoros'}</span></div>
+    <button class="tile${due ? ' hot' : ''}" data-gofey><b>${due}</b><span>por repasar</span></button></div></div>`;
+  box.querySelector('[data-gofey]').onclick = () => { S.libTab = 'fey'; renderLibrary(); $('#libMain').scrollTop = 0; };
 }
 
 // ---------- Pomodoro + método Feynman ----------
@@ -1577,6 +1675,7 @@ function renderFeyAll() {
   }
   const dueN = cards.filter((c) => c.due <= Date.now()).length;
   box.replaceChildren(
+    pageHead('Tarjetas Feynman', 'Tus explicaciones con repaso espaciado'),
     h('div', { class: 'fe-top' }, h('b', {}, dueN ? `${dueN} ${dueN === 1 ? 'tarjeta' : 'tarjetas'} para repasar hoy` : 'Todo al día'), h('span', { class: 'sub' }, `${cards.length} en total · ${S.fey.reduce((a, c) => a + (c.gaps || []).filter((g) => !(c.fixed || []).includes(g)).length, 0)} lagunas abiertas`)),
     ...cards.map(feyCard));
 }
@@ -1833,11 +1932,24 @@ export async function start() {
   <div id="body">
     <main id="main">
       <section id="library">
-        <div class="lib-head"><div><div class="hello" id="hello"></div><h1 class="brand">Lumen</h1></div>
-          <input id="q" type="search" placeholder="Buscar en la biblioteca" aria-label="Buscar en la biblioteca"></div>
-        <div id="libBooks"><div id="stats"></div><div id="cont"></div><div class="chips" id="folderChips"></div><div id="folderHead"></div><div class="chips" id="tagChips"></div><div class="chips" id="fmtChips"></div><div id="grid"></div></div>
-        <div id="hlAll" hidden></div>
-        <div id="feyAll" hidden></div>
+        <div class="lib-shell">
+          <aside id="libSide" aria-label="Navegación de la biblioteca"></aside>
+          <div class="lib-main" id="libMain"><div class="lib-wrap">
+            <header class="lib-head">
+              <div class="lib-title"><div class="hello" id="hello"></div><h1 class="brand" id="pageTitle">Lumen</h1></div>
+              <label class="lib-search">${I.search}<input id="q" type="search" placeholder="Buscar documentos…" aria-label="Buscar en la biblioteca"></label>
+              <button id="addBtn" class="btn">${I.plus}<span>Añadir</span></button>
+            </header>
+            <div id="libBooks">
+              <div id="dash"><div id="cont"></div><div id="stats"></div></div>
+              <div id="folderHead"></div>
+              <div id="toolbar"></div>
+              <div id="grid"></div>
+            </div>
+            <div id="hlAll" hidden></div>
+            <div id="feyAll" hidden></div>
+          </div></div>
+        </div>
       </section>
       <section id="viewer" hidden><div id="views"></div></section>
       <button id="fab">${I.plus} Añadir documentos</button>
@@ -1913,6 +2025,7 @@ export async function start() {
       { label: 'Subir una carpeta entera', sub: 'Se crea un ramo con su nombre y se suben todos sus documentos', value: 'dir' }]);
     if (t === 'files') $('#file').click(); else if (t === 'dir') $('#dir').click();
   };
+  $('#addBtn').onclick = () => $('#fab').click();
   $('#dir').onchange = (e) => { const f = [...e.target.files]; e.target.value = ''; onDir(f); };
   $('#file').onchange = (e) => { const f = [...e.target.files]; e.target.value = ''; onFiles(f); };
   $('#bk').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) importBackup(f); };
@@ -1923,7 +2036,7 @@ export async function start() {
     if (S.lpFired) { S.lpFired = false; return; }
     if (S.selMode) { const c = e.target.closest('.card'); if (c) toggleSel(c.dataset.id); return; }
     const fo = e.target.closest('[data-folder]');
-    if (fo) { S.lib.folder = fo.dataset.folder; renderLibrary(); $('#library').scrollTop = 0; return; }
+    if (fo) { S.lib.folder = fo.dataset.folder; renderLibrary(); $('#libMain').scrollTop = 0; return; }
     const m = e.target.closest('[data-more]');
     if (m) { bookMenu(m.dataset.more); return; }
     const o = e.target.closest('[data-open]');
@@ -1953,6 +2066,25 @@ export async function start() {
     showDropStrip();
   });
   $('#grid').addEventListener('dragend', hideDropStrip);
+  // Soltar documentos (arrastre interno) sobre una carpeta de la barra lateral.
+  const side = $('#libSide');
+  side.addEventListener('dragover', (e) => {
+    if (!e.dataTransfer?.types?.includes('text/lumen-books')) return;
+    const t = e.target.closest('.side-f');
+    if (!t) return;
+    e.preventDefault();
+    side.querySelectorAll('.side-f').forEach((x) => x.classList.toggle('over', x === t));
+  });
+  side.addEventListener('dragleave', (e) => { if (!e.relatedTarget || !side.contains(e.relatedTarget)) side.querySelectorAll('.over').forEach((x) => x.classList.remove('over')); });
+  side.addEventListener('drop', (e) => {
+    const t = e.target.closest('.side-f');
+    if (!t || !e.dataTransfer?.types?.includes('text/lumen-books')) return;
+    e.preventDefault(); e.stopPropagation();
+    side.querySelectorAll('.over').forEach((x) => x.classList.remove('over'));
+    let ids = [];
+    try { ids = JSON.parse(e.dataTransfer.getData('text/lumen-books')); } catch { /* no es un documento */ }
+    if (ids.length) moveBooks(ids, t.dataset.folder);
+  });
   const strip = $('#dropStrip');
   strip.addEventListener('dragover', (e) => { e.preventDefault(); strip.querySelectorAll('.dz').forEach((x) => x.classList.toggle('over', x === e.target.closest('.dz'))); });
   strip.addEventListener('drop', (e) => {
@@ -2020,7 +2152,10 @@ export async function start() {
       turnPage(activeView(), e.key === 'ArrowLeft' || e.key === 'PageUp' || (e.key === ' ' && e.shiftKey) ? -1 : 1);
     }
   });
-  addEventListener('resize', () => { if (innerWidth < 1100 && S.split) { layout(); } });
+  addEventListener('resize', () => {
+    if (innerWidth < 1100 && S.split) layout();
+    if (S.screen === 'library') { clearTimeout(S.rzT); S.rzT = setTimeout(renderLibrary, 150); }
+  });
   addEventListener('beforeunload', () => S.views.forEach((v) => flushProgress(v.book)));
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') S.views.forEach((v) => flushProgress(v.book)); });
   // Arrastrar archivos (laptop)
@@ -2029,7 +2164,7 @@ export async function start() {
     if (!e.dataTransfer?.types?.includes('Files')) return;
     document.body.classList.add('dropping');
     document.querySelectorAll('.drophover').forEach((x) => x.classList.remove('drophover'));
-    e.target.closest?.('.fold[data-folder]')?.classList.add('drophover');
+    e.target.closest?.('.fold[data-folder], .side-f[data-folder]')?.classList.add('drophover');
   });
   addEventListener('dragleave', (e) => { if (!e.relatedTarget) { document.body.classList.remove('dropping'); document.querySelectorAll('.drophover').forEach((x) => x.classList.remove('drophover')); } });
   addEventListener('drop', async (e) => {
@@ -2037,7 +2172,7 @@ export async function start() {
     document.body.classList.remove('dropping');
     document.querySelectorAll('.drophover').forEach((x) => x.classList.remove('drophover'));
     if (e.dataTransfer?.types?.includes('text/lumen-books')) return;
-    const tgt = e.target.closest?.('.fold[data-folder]');
+    const tgt = e.target.closest?.('.fold[data-folder], .side-f[data-folder]');
     const preset = tgt ? (tgt.dataset.folder === 'none' ? '__none' : tgt.dataset.folder) : null;
     const items = [...(e.dataTransfer?.items || [])].map((i) => i.webkitGetAsEntry?.()).filter(Boolean);
     const dirs = items.filter((x) => x.isDirectory);
