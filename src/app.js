@@ -58,7 +58,7 @@ const wide = () => innerWidth >= 900;
 const S = {
   books: [], hl: new Map(), views: new Map(), tabs: [], panes: [], focus: 0, split: false,
   screen: 'library', libTab: 'books', folders: [], lib: { folder: 'all', tag: 'all', fmt: 'all', q: '' }, panel: null, hlFilter: null,
-  pending: null, mirror: null, stats: { days: {}, books: {} }, timer: null, tts: null, hlLoaded: new Set(), texts: new Map(), textP: new Map(), saveT: {}, barTouched: false,
+  sel: new Set(), selMode: false, pending: null, mirror: null, stats: { days: {}, books: {} }, timer: null, tts: null, hlLoaded: new Set(), texts: new Map(), textP: new Map(), saveT: {}, barTouched: false,
 };
 // ---------- instalar en laptop / almacenamiento / copia espejo ----------
 let deferredInstall = null;
@@ -121,6 +121,7 @@ async function setFocus(on) {
   if (on === !!S.focusMode) return;
   S.focusMode = on;
   document.body.classList.toggle('focus', on);
+  renderFocusDocs();
   if (on) { closePanel(); hideBar(); }
   try {
     if (native) await (on ? SystemBars.hide() : SystemBars.show());
@@ -172,6 +173,39 @@ function attachPinch(view) {
     clearTimeout(wz.t);
     wz.t = setTimeout(() => { const s = wz; wz = null; view.pinchEnd(s); }, 220);
   }, { passive: false });
+}
+
+// Documentos abiertos dentro del modo pantalla completa.
+function renderFocusDocs() {
+  const n = S.tabs.filter(bookById).length;
+  const btn = $('#focusDocs');
+  if (!btn) return;
+  btn.hidden = !(S.focusMode && n > 1);
+  $('#fdCount').textContent = n;
+  if (btn.hidden) $('#focusList').hidden = true;
+  else if (!$('#focusList').hidden) fillFocusList();
+}
+function fillFocusList() {
+  const cur = S.panes[S.focus];
+  $('#focusList').replaceChildren(...S.tabs.map((id) => {
+    const b = bookById(id);
+    if (!b) return null;
+    return h('div', { class: 'fl' + (id === cur ? ' on' : '') },
+      h('button', { class: 'fl-t', onclick: () => { $('#focusList').hidden = true; openBook(id); } },
+        h('i', { class: 'dot', style: `background:var(--c-${b.tag})` }), h('span', {}, b.title), h('small', {}, `${Math.round((b.progress || 0) * 100)} %`)),
+      h('button', { class: 'fl-x', 'aria-label': 'Cerrar documento', onclick: (e) => { e.stopPropagation(); closeTab(id); } }, '×'));
+  }));
+}
+function toggleFocusList() {
+  const l = $('#focusList');
+  l.hidden = !l.hidden;
+  if (!l.hidden) fillFocusList();
+}
+function switchTab(dir) {
+  const ids = S.tabs.filter(bookById);
+  if (ids.length < 2) return;
+  const i = Math.max(ids.indexOf(S.panes[S.focus]), 0);
+  openBook(ids[(i + dir + ids.length) % ids.length]);
 }
 
 // Zoom por pasos (botones y teclado), útil sobre todo en pantalla completa.
@@ -457,7 +491,7 @@ function renderFolderGrid() {
   cards.push(h('button', { class: 'fold add', onclick: () => newFolder(true), html: '<div class="fshape"><i class="ftab"></i><div class="plus">+</div></div><div class="fn">Nueva carpeta</div><div class="pc">Un ramo, un curso…</div>' }));
   const intro = !S.folders.length ? [h('div', { class: 'empty', style: 'grid-column:1/-1', html: S.books.length
     ? '<b>Organiza tus documentos</b>Crea una carpeta por cada ramo y muévelos con el menú “⋯” de cada documento.'
-    : '<b>Empieza creando una carpeta</b>Una por ramo. Luego toca “Añadir libro” y elige tus PDF, Word o EPUB.<br>En laptop también puedes arrastrarlos a esta ventana.' })] : [];
+    : '<b>Empieza creando una carpeta</b>Una por ramo. Luego toca “Añadir documentos” y elige <b style="display:inline;font:inherit;color:inherit">varios a la vez</b> (mantén presionado un archivo para seleccionar más).<br>En laptop también puedes arrastrar muchos archivos o una carpeta entera a esta ventana.' })] : [];
   grid.replaceChildren(...intro, ...cards);
 }
 const SORTS = {
@@ -475,6 +509,7 @@ function renderLibrary() {
   if (S.libTab === 'hls') return renderAllHl();
   const { tag, fmt, q, folder } = S.lib;
   const root = folder === 'all' && !q;
+  if (root && S.selMode) { S.selMode = false; S.sel.clear(); updateSelBar(); }
   if (root) renderStats(); else $('#stats').replaceChildren();
   const last = [...S.books].filter((b) => b.lastRead).sort((a, b) => b.lastRead - a.lastRead)[0];
   const cont = $('#cont');
@@ -506,7 +541,8 @@ function renderLibrary() {
     ...[['recent', 'Recientes'], ['title', 'Título A–Z'], ['progress', 'Más avanzados'], ['added', 'Añadidos']].map(([k, l]) => h('option', { value: k }, l)));
   sortSel.value = settings.sort;
   $('#fmtChips').replaceChildren(...[['all', 'Todo'], ['pdf', 'PDF'], ['docx', 'Word'], ['epub', 'EPUB'], ['txt', 'Texto']]
-    .map(([k, l]) => chip(l, fmt === k, () => { S.lib.fmt = k; renderLibrary(); })), sortSel);
+    .map(([k, l]) => chip(l, fmt === k, () => { S.lib.fmt = k; renderLibrary(); })), sortSel,
+    chip(S.selMode ? '✓ Seleccionando' : 'Seleccionar', S.selMode, toggleSelMode));
   const fq = q.toLowerCase();
   const list = S.books.filter((b) => (folder === 'all' || (folder === 'none' ? !b.folder : b.folder === folder)) && (tag === 'all' || b.tag === tag) && (fmt === 'all' || b.format === fmt)
     && (!fq || (b.title + ' ' + b.author).toLowerCase().includes(fq)))
@@ -515,13 +551,13 @@ function renderLibrary() {
   if (!list.length) {
     grid.replaceChildren(h('div', { class: 'empty', style: 'grid-column:1/-1', html: S.books.length
       ? '<b>Nada por aquí</b>Prueba con otro filtro o búsqueda.'
-      : '<b>Tu biblioteca está vacía</b>Toca “Añadir libro” y elige tus PDF, Word o EPUB.<br>En laptop también puedes arrastrarlos a esta ventana.' }));
+      : '<b>Tu biblioteca está vacía</b>Toca “Añadir documentos” y elige varios PDF, Word o EPUB a la vez.<br>En laptop también puedes arrastrarlos a esta ventana.' }));
     return;
   }
-  grid.replaceChildren(...list.map((b) => h('div', { class: 'card', 'data-id': b.id, html:
+  grid.replaceChildren(...list.map((b) => h('div', { class: 'card' + (S.sel.has(b.id) ? ' sel' : ''), draggable: matchMedia('(pointer: fine)').matches ? 'true' : 'false', 'data-id': b.id, html:
     `<button style="display:block;width:100%;text-align:left" data-open="${b.id}">${coverHtml(b)}<div class="nm">${esc(b.title)}</div>
      <div class="pc">${b.done ? '✓ Terminado' : b.lastRead ? Math.round(b.progress * 100) + ' %' : 'Nuevo'} · ${S.folders.find((f) => f.id === b.folder)?.name || TAGS[b.tag]}</div></button>
-     <span class="more" data-more="${b.id}" role="button" aria-label="Opciones">⋯</span>` })));
+     <span class="more" data-more="${b.id}" role="button" aria-label="Opciones">⋯</span><i class="ck" aria-hidden="true">✓</i>` })));
 }
 async function renderAllHl() {
   const all = await DB.allHl();
@@ -545,7 +581,7 @@ async function openAt(bookId, rec) {
 }
 
 // ---------- importar ----------
-async function onFiles(files) {
+async function onFiles(files, presetFolder) {
   const ok = [...files].filter((f) => FORMATS[ext(f.name)]);
   if (!ok.length) { toast('Formatos admitidos: PDF, Word (.docx), EPUB y texto'); return; }
   if (!ok.some((f) => !S.books.some((b) => b.name === f.name && b.size === f.size))) {
@@ -554,8 +590,8 @@ async function onFiles(files) {
     openBook(d.id);
     return;
   }
-  let inFolder = S.folders.some((f) => f.id === S.lib.folder) ? S.lib.folder : null;
-  if (!inFolder && S.lib.folder === 'all' && S.folders.length) {
+  let inFolder = presetFolder === '__none' ? null : presetFolder || (S.folders.some((f) => f.id === S.lib.folder) ? S.lib.folder : null);
+  if (!presetFolder && !inFolder && S.lib.folder === 'all' && S.folders.length) {
     const t = await choose(ok.length > 1 ? `¿En qué carpeta van estos ${ok.length} documentos?` : '¿En qué carpeta va este documento?',
       [...S.folders.map((f) => ({ label: f.name, value: f.id })), { label: 'Nueva carpeta…', value: '__new' }, { label: 'Sin carpeta', value: '__none' }]);
     if (!t) return;
@@ -569,20 +605,38 @@ async function onFiles(files) {
     if (!tag) return;
   }
   DB.persist();
-  let last = null;
+  let last = null, added = 0, dup = 0, failed = 0;
   for (let i = 0; i < ok.length; i++) {
-    toast(`Añadiendo ${i + 1} de ${ok.length}…`, { sticky: true });
-    last = (await addFile(ok[i], tag, inFolder)) || last;
+    toast(ok.length > 1 ? `Añadiendo ${i + 1} de ${ok.length} · ${ok[i].name}` : `Añadiendo ${ok[i].name}…`, { sticky: true });
+    const r = await addFile(ok[i], tag, inFolder);
+    if (r === 'dupe') dup++; else if (r) { added++; last = r; } else failed++;
+    if (ok.length > 1 && i % 3 === 2) renderLibrary();
   }
-  toast(ok.length > 1 ? `${ok.length} documentos añadidos` : 'Documento añadido');
+  const parts = [`${added} ${added === 1 ? 'documento añadido' : 'documentos añadidos'}`];
+  if (dup) parts.push(`${dup} ya estaban`);
+  if (failed) parts.push(`${failed} con error`);
+  toast(parts.join(' · '), { ms: 5000 });
   S.libTab = 'books';
   renderLibrary();
   if (ok.length === 1 && last) openBook(last.id);
 }
+// Carpeta entera del computador: se crea (o reutiliza) un ramo con su nombre y se suben todos sus documentos.
+async function onDir(files) {
+  const list = [...files].filter((f) => FORMATS[ext(f.name)]);
+  if (!list.length) { toast('Esa carpeta no tiene PDF, Word, EPUB ni texto'); return; }
+  const name = (list[0].webkitRelativePath || '').split('/')[0] || 'Carpeta nueva';
+  let f = S.folders.find((x) => x.name.toLowerCase() === name.toLowerCase());
+  if (!f) { f = { id: DB.uid(), name: name.slice(0, 40) }; S.folders.push(f); await saveFolders(); }
+  S.lib.folder = 'all';
+  await onFiles(list, f.id);
+  S.lib.folder = f.id;
+  renderLibrary();
+}
+
 async function addFile(file, tag, folder = null) {
   const format = FORMATS[ext(file.name)];
   const dupe = S.books.find((b) => b.name === file.name && b.size === file.size);
-  if (dupe) { toast('Ese documento ya estaba en tu biblioteca'); return dupe; }
+  if (dupe) return 'dupe';
   const id = DB.uid();
   const book = { id, name: file.name, title: file.name.replace(/\.[^.]+$/, ''), author: '', format, tag, folder, size: file.size, added: Date.now(), lastRead: 0, progress: 0, pos: null, cover: null, pages: 0 };
   try {
@@ -730,6 +784,7 @@ function renderTabs() {
       h('span', { class: 'x', role: 'button', 'aria-label': 'Cerrar', onclick: (e) => { e.stopPropagation(); closeTab(id); } }, '×'));
   }));
   box.querySelector('.focus')?.scrollIntoView({ inline: 'nearest', block: 'nearest' });
+  renderFocusDocs();
 }
 function closeTab(id) {
   const v = S.views.get(id);
@@ -997,6 +1052,57 @@ async function importBackup(file) {
     renderLibrary();
   } catch (e) { toast('No se pudo leer la copia: ' + e.message); }
 }
+
+// ---------- selección múltiple y mover documentos ----------
+function updateSelBar() {
+  $('#selActions').hidden = !S.selMode;
+  $('#selCount').textContent = `${S.sel.size} ${S.sel.size === 1 ? 'seleccionado' : 'seleccionados'}`;
+  $('#fab').classList.toggle('lift', S.selMode);
+}
+function toggleSelMode() { if (S.selMode) endSel(); else { S.selMode = true; S.sel.clear(); updateSelBar(); renderLibrary(); } }
+function endSel() { S.selMode = false; S.sel.clear(); updateSelBar(); renderLibrary(); }
+function toggleSel(id) {
+  if (S.sel.has(id)) S.sel.delete(id); else S.sel.add(id);
+  document.querySelector(`#grid .card[data-id="${id}"]`)?.classList.toggle('sel', S.sel.has(id));
+  updateSelBar();
+}
+async function moveBooks(ids, fid) {
+  const target = fid === 'none' || fid === '__none' ? null : fid;
+  const prev = ids.map((id) => [id, bookById(id)?.folder || null]);
+  for (const id of ids) { const b = bookById(id); if (b) { b.folder = target; await DB.putBook(b); } }
+  const name = target ? S.folders.find((f) => f.id === target)?.name : 'Sin carpeta';
+  S.selMode = false; S.sel.clear();
+  hideDropStrip(); updateSelBar(); renderLibrary();
+  toast(`${ids.length} ${ids.length === 1 ? 'documento movido' : 'documentos movidos'} a “${name}”`, { ms: 6000, action: { label: 'Deshacer', fn: async () => {
+    for (const [id, f] of prev) { const b = bookById(id); if (b) { b.folder = f; await DB.putBook(b); } }
+    renderLibrary();
+  } } });
+}
+async function pickFolder(title) {
+  const t = await choose(title, [...S.folders.map((f) => ({ label: f.name, value: f.id })), { label: 'Nueva carpeta…', value: '__new' }, { label: 'Sin carpeta', value: '__none' }]);
+  if (t === '__new') { const f = await newFolder(false); return f ? f.id : null; }
+  return t;
+}
+async function deleteBooks(ids) {
+  const ok = await choose(`¿Eliminar ${ids.length} ${ids.length === 1 ? 'documento' : 'documentos'}?`, [{ label: 'Sí, eliminar', sub: 'Borra los archivos y sus subrayados. No se puede deshacer', value: true, danger: true }]);
+  if (!ok) return;
+  for (const id of ids) {
+    if (S.tabs.includes(id)) closeTab(id);
+    await DB.delBook(id);
+    S.books = S.books.filter((x) => x.id !== id);
+    S.hl.delete(id); S.hlLoaded.delete(id); S.texts.delete(id);
+  }
+  endSel();
+  toast('Documentos eliminados');
+}
+function showDropStrip() {
+  const strip = $('#dropStrip');
+  const cur = S.lib.folder;
+  const targets = [...S.folders.map((f) => ({ id: f.id, name: f.name })), { id: 'none', name: 'Sin carpeta' }].filter((t) => t.id !== cur);
+  strip.replaceChildren(h('span', { class: 'sub' }, 'Suelta en:'), ...targets.map((t) => h('div', { class: 'dz', 'data-dropfolder': t.id }, t.name)));
+  strip.hidden = false;
+}
+function hideDropStrip() { $('#dropStrip').hidden = true; }
 
 // ---------- carpetas ----------
 const saveFolders = () => DB.kvSet('folders', S.folders);
@@ -1388,11 +1494,15 @@ export async function start() {
         <div id="hlAll" hidden></div>
       </section>
       <section id="viewer" hidden><div id="views"></div></section>
-      <button id="fab">${I.plus} Añadir libro</button>
+      <button id="fab">${I.plus} Añadir documentos</button>
       <button id="exitFocus" aria-label="Salir de pantalla completa">${I.expand}</button>
+      <button id="focusDocs" aria-label="Documentos abiertos" hidden>${I.book}<b id="fdCount"></b></button>
+      <div id="focusList" hidden></div>
       <div id="zoomCtl" aria-label="Zoom"><button id="zOut" class="ib" aria-label="Alejar">−</button><button id="zReset" class="ib" aria-label="Zoom normal">1:1</button><button id="zIn" class="ib" aria-label="Acercar">+</button></div>
       <div id="zoomHud" role="status"></div>
       <div id="focusTimer" hidden></div>
+      <div id="selActions" hidden><span id="selCount"></span><button id="selMove" class="btn">Mover</button><button id="selAll" class="btn ghost">Todo</button><button id="selDel" class="btn ghost">Eliminar</button><button id="selCancel" class="btn ghost">Cancelar</button></div>
+      <div id="dropStrip" hidden></div>
       <div id="ttsBar" hidden><button id="ttsPlay" class="ib" aria-label="Pausar o seguir"></button><button id="ttsStop" class="ib" aria-label="Detener lectura">${I.stop}</button><button id="ttsSpeed" class="chip" aria-label="Velocidad de lectura"></button><span id="ttsLabel"></span></div>
       <div id="loading" hidden><div><div class="spin"></div><span id="loadtxt"></span></div></div>
     </main>
@@ -1415,6 +1525,7 @@ export async function start() {
 </div>
 <input type="file" id="file" multiple hidden accept=".pdf,.docx,.epub,.txt,.md,.html,.htm,application/pdf">
 <input type="file" id="bk" hidden accept=".json,application/json">
+<input type="file" id="dir" hidden webkitdirectory multiple>
 <div id="backdrop" hidden></div><div id="selbar" hidden></div><div id="toast" role="status"></div><div id="modal" hidden></div>`;
 
   S.books = await DB.allBooks();
@@ -1437,17 +1548,28 @@ export async function start() {
   $('#splitBtn').onclick = toggleSplit;
   $('#installBtn').onclick = doInstall;
   $('#exitFocus').onclick = () => setFocus(false);
+  $('#focusDocs').onclick = (e) => { e.stopPropagation(); toggleFocusList(); };
+  document.addEventListener('click', (e) => { const l = $('#focusList'); if (!l.hidden && !e.target.closest('#focusList, #focusDocs')) l.hidden = true; });
   $('#zIn').onclick = () => stepZoom(1);
   $('#zOut').onclick = () => stepZoom(-1);
   $('#zReset').onclick = () => stepZoom(0, true);
   installUi();
-  $('#fab').onclick = () => $('#file').click();
+  $('#fab').onclick = async () => {
+    if (native) { $('#file').click(); return; }
+    const t = await choose('Añadir documentos', [
+      { label: 'Elegir archivos', sub: 'Puedes seleccionar varios a la vez (Ctrl o Shift)', value: 'files' },
+      { label: 'Subir una carpeta entera', sub: 'Se crea un ramo con su nombre y se suben todos sus documentos', value: 'dir' }]);
+    if (t === 'files') $('#file').click(); else if (t === 'dir') $('#dir').click();
+  };
+  $('#dir').onchange = (e) => { const f = [...e.target.files]; e.target.value = ''; onDir(f); };
   $('#file').onchange = (e) => { const f = [...e.target.files]; e.target.value = ''; onFiles(f); };
   $('#bk').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) importBackup(f); };
   $('#q').oninput = (e) => { S.lib.q = e.target.value.trim(); renderLibrary(); $('#q').focus(); };
   $('#libnav').onclick = (e) => { const b = e.target.closest('button'); if (b) { if (b.dataset.t === 'books') S.lib.folder = 'all'; S.libTab = b.dataset.t; renderLibrary(); } };
   $('#backdrop').onclick = closePanel;
   $('#grid').onclick = (e) => {
+    if (S.lpFired) { S.lpFired = false; return; }
+    if (S.selMode) { const c = e.target.closest('.card'); if (c) toggleSel(c.dataset.id); return; }
     const fo = e.target.closest('[data-folder]');
     if (fo) { S.lib.folder = fo.dataset.folder; renderLibrary(); $('#library').scrollTop = 0; return; }
     const m = e.target.closest('[data-more]');
@@ -1455,6 +1577,39 @@ export async function start() {
     const o = e.target.closest('[data-open]');
     if (o) openBook(o.dataset.open);
   };
+  // Mantener presionado un documento activa la selección múltiple.
+  let lpT;
+  $('#grid').addEventListener('pointerdown', (e) => {
+    const c = e.target.closest('.card');
+    S.lpFired = false;
+    clearTimeout(lpT);
+    if (!c || S.selMode || e.target.closest('[data-more]') || e.pointerType === 'mouse') return;
+    lpT = setTimeout(() => { S.lpFired = true; S.selMode = true; S.sel.add(c.dataset.id); navigator.vibrate?.(15); updateSelBar(); renderLibrary(); }, 500);
+  });
+  ['pointerup', 'pointercancel', 'pointermove'].forEach((t) => $('#grid').addEventListener(t, () => clearTimeout(lpT)));
+  $('#selMove').onclick = async () => { if (!S.sel.size) { toast('Marca primero uno o más documentos'); return; } const f = await pickFolder(`Mover ${S.sel.size} ${S.sel.size === 1 ? 'documento' : 'documentos'} a…`); if (f) moveBooks([...S.sel], f); };
+  $('#selDel').onclick = () => { if (!S.sel.size) { toast('Marca primero uno o más documentos'); return; } deleteBooks([...S.sel]); };
+  $('#selAll').onclick = () => { document.querySelectorAll('#grid .card').forEach((c) => S.sel.add(c.dataset.id)); renderLibrary(); updateSelBar(); };
+  $('#selCancel').onclick = endSel;
+  // Arrastrar documentos (laptop) hacia una carpeta destino.
+  $('#grid').addEventListener('dragstart', (e) => {
+    const c = e.target.closest('.card');
+    if (!c) return;
+    const ids = S.selMode && S.sel.has(c.dataset.id) ? [...S.sel] : [c.dataset.id];
+    e.dataTransfer.setData('text/lumen-books', JSON.stringify(ids));
+    e.dataTransfer.effectAllowed = 'move';
+    showDropStrip();
+  });
+  $('#grid').addEventListener('dragend', hideDropStrip);
+  const strip = $('#dropStrip');
+  strip.addEventListener('dragover', (e) => { e.preventDefault(); strip.querySelectorAll('.dz').forEach((x) => x.classList.toggle('over', x === e.target.closest('.dz'))); });
+  strip.addEventListener('drop', (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const dz = e.target.closest('.dz');
+    let ids = [];
+    try { ids = JSON.parse(e.dataTransfer.getData('text/lumen-books')); } catch { /* no es un documento */ }
+    if (dz && ids.length) moveBooks(ids, dz.dataset.dropfolder); else hideDropStrip();
+  });
   $('#bar').onclick = (e) => {
     const b = e.target.closest('button');
     if (!b) return;
@@ -1494,9 +1649,13 @@ export async function start() {
   document.addEventListener('selectionchange', () => { clearTimeout(selT); selT = setTimeout(onSelection, 320); });
   document.addEventListener('keydown', (e) => {
     const typing = /^(INPUT|TEXTAREA)$/.test(e.target.tagName);
-    if (e.key === 'Escape') { if (S.closeModal) S.closeModal(); else if (S.panel) closePanel(); else if (S.focusMode) setFocus(false); else hideBar(); }
+    if (e.key === 'Escape') { if (S.closeModal) S.closeModal(); else if (S.panel) closePanel(); else if (S.selMode) endSel(); else if (S.focusMode) setFocus(false); else hideBar(); }
     else if (e.key.toLowerCase() === 'f' && !e.ctrlKey && !e.metaKey && !e.altKey && !typing && S.screen === 'reader' && !S.closeModal) setFocus(!S.focusMode);
     else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f' && S.screen === 'reader') { e.preventDefault(); S.panel = null; openPanel('search'); }
+    else if (!typing && S.screen === 'reader' && !S.closeModal && (e.key === '[' || e.key === ']' || (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')))) {
+      e.preventDefault();
+      switchTab(e.key === '[' || e.key === 'ArrowLeft' ? -1 : 1);
+    }
     else if (!typing && S.screen === 'reader' && !S.closeModal && ['+', '=', '-', '_', '0'].includes(e.key) && !e.altKey) {
       e.preventDefault();
       if (e.key === '0') stepZoom(0, true); else stepZoom(e.key === '-' || e.key === '_' ? -1 : 1);
@@ -1510,9 +1669,48 @@ export async function start() {
   addEventListener('beforeunload', () => S.views.forEach((v) => flushProgress(v.book)));
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') S.views.forEach((v) => flushProgress(v.book)); });
   // Arrastrar archivos (laptop)
-  addEventListener('dragover', (e) => { e.preventDefault(); document.body.classList.add('dropping'); });
-  addEventListener('dragleave', (e) => { if (!e.relatedTarget) document.body.classList.remove('dropping'); });
-  addEventListener('drop', (e) => { e.preventDefault(); document.body.classList.remove('dropping'); if (e.dataTransfer?.files?.length) onFiles(e.dataTransfer.files); });
+  addEventListener('dragover', (e) => {
+    e.preventDefault();
+    if (!e.dataTransfer?.types?.includes('Files')) return;
+    document.body.classList.add('dropping');
+    document.querySelectorAll('.drophover').forEach((x) => x.classList.remove('drophover'));
+    e.target.closest?.('.fold[data-folder]')?.classList.add('drophover');
+  });
+  addEventListener('dragleave', (e) => { if (!e.relatedTarget) { document.body.classList.remove('dropping'); document.querySelectorAll('.drophover').forEach((x) => x.classList.remove('drophover')); } });
+  addEventListener('drop', async (e) => {
+    e.preventDefault();
+    document.body.classList.remove('dropping');
+    document.querySelectorAll('.drophover').forEach((x) => x.classList.remove('drophover'));
+    if (e.dataTransfer?.types?.includes('text/lumen-books')) return;
+    const tgt = e.target.closest?.('.fold[data-folder]');
+    const preset = tgt ? (tgt.dataset.folder === 'none' ? '__none' : tgt.dataset.folder) : null;
+    const items = [...(e.dataTransfer?.items || [])].map((i) => i.webkitGetAsEntry?.()).filter(Boolean);
+    const dirs = items.filter((x) => x.isDirectory);
+    if (dirs.length) {
+      const walk = (en) => new Promise((res) => {
+        if (en.isFile) { en.file((f) => res([f]), () => res([])); return; }
+        const out = [];
+        const rd = en.createReader();
+        const next = () => rd.readEntries(async (ents) => {
+          if (!ents.length) { res(out.flat()); return; }
+          for (const x of ents) out.push(await walk(x));
+          next();
+        }, () => res(out.flat()));
+        next();
+      });
+      for (const d of dirs) {
+        const files = (await walk(d)).filter((f) => FORMATS[ext(f.name)]);
+        if (!files.length) continue;
+        let f = S.folders.find((x) => x.name.toLowerCase() === d.name.toLowerCase());
+        if (!f) { f = { id: DB.uid(), name: d.name.slice(0, 40) }; S.folders.push(f); await saveFolders(); }
+        await onFiles(files, f.id);
+      }
+      const loose = [...e.dataTransfer.files].filter((f, i) => !items[i]?.isDirectory);
+      if (loose.length) onFiles(loose, preset);
+      return;
+    }
+    if (e.dataTransfer?.files?.length) onFiles(e.dataTransfer.files, preset);
+  });
 
   onUpdateStatus((s) => {
     if (S.panel === 'cfg') renderPanel();
@@ -1523,6 +1721,7 @@ export async function start() {
     CapApp.addListener('backButton', () => {
       if (S.closeModal) S.closeModal();
       else if (S.focusMode) setFocus(false);
+      else if (S.selMode) endSel();
       else if (!$('#selbar').hidden) hideBar();
       else if (S.panel) closePanel();
       else if (S.screen === 'reader') goLibrary();
