@@ -78,7 +78,7 @@ svg{display:block}
 .view.off{visibility:hidden;pointer-events:none}
 #views{position:absolute;inset:0}
 .paneedge{border-left:1px solid var(--line)}
-.doc{max-width:var(--cw);margin:0 auto;padding:26px 22px 140px;font-family:var(--rf);font-size:var(--fs);line-height:var(--lh);overflow-wrap:break-word;hyphens:auto}
+.doc{max-width:var(--cw);margin:0 auto;padding:26px 22px 140px;font-family:var(--rf);font-size:var(--fs);line-height:var(--lh);overflow-wrap:break-word;hyphens:manual}
 .doc p{margin:0 0 .9em}
 .doc h1,.doc h2,.doc h3,.doc h4{font-family:var(--disp);line-height:1.2;margin:1.4em 0 .6em}
 .doc h1{font-size:1.6em}.doc h2{font-size:1.35em}.doc h3{font-size:1.15em}
@@ -365,3 +365,12 @@ body.focus #barShow{display:none!important}
 .fcard .chips{margin:8px 0}
 .fc-acts{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center}
 .fc-acts .btn{padding:9px 14px}
+
+/* fluidez del desplazamiento */
+.pg{box-shadow:0 0 0 1px rgba(128,128,128,.25)!important;contain:layout paint style}
+.pg canvas{mix-blend-mode:normal!important;filter:none!important}
+.pg canvas.cssinv{filter:invert(.9) hue-rotate(180deg)!important}
+.pages{contain:layout style}
+.textLayer{contain:layout paint style}
+.view{overscroll-behavior:contain}
+#exitFocus,#zoomCtl .ib,#focusDocs,#barShow{backdrop-filter:none!important;background:rgba(20,17,13,.72)!important}

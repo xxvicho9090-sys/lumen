@@ -17,9 +17,12 @@ const dark = () => matchMedia('(prefers-color-scheme: dark)').matches;
 export const themeOf = () => (settings.theme === 'auto' ? (dark() ? 'noche' : 'papel') : settings.theme);
 matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => { if (settings.theme === 'auto') applySettings(); });
 
+let lastTheme = null;
 export function applySettings() {
   const r = document.documentElement;
   r.dataset.theme = themeOf();
+  if (lastTheme && lastTheme !== themeOf()) setTimeout(() => window.dispatchEvent(new Event('lumen-theme')));
+  lastTheme = themeOf();
   r.style.setProperty('--fs', settings.size + 'px');
   r.style.setProperty('--lh', settings.lh);
   r.style.setProperty('--rf', FONTS[settings.font] || FONTS.serif);

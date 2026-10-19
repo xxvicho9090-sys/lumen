@@ -846,6 +846,12 @@ async function saveSession() {
 // ---------- progreso ----------
 let rafBar;
 function onScroll(view) {
+  lastAct = Date.now();
+  if (view._st) return;
+  // El trabajo de seguimiento (posición, progreso, barra) se hace como máximo ~7 veces por segundo, no en cada cuadro del scroll.
+  view._st = setTimeout(() => { view._st = 0; scrollWork(view); }, 140);
+}
+function scrollWork(view) {
   const book = view.book;
   book.pos = { ...view.getPos(), m: viewMode(view) };
   book.progress = view.kind === 'pdf' || view.paged ? view.ratio_ !== undefined ? view.ratio() : view.page() / Math.max(view.secs.length - 1, 1) : view.ratio();
@@ -1890,6 +1896,7 @@ export async function start() {
   $('#cfgBtn').onclick = () => openPanel('cfg');
   $('#splitBtn').onclick = toggleSplit;
   $('#installBtn').onclick = doInstall;
+  addEventListener('lumen-theme', () => S.views.forEach((v) => v.kind === 'pdf' && v.relayout?.(true)));
   $('#barHide').onclick = () => setBarHidden(true);
   $('#barShow').onclick = () => setBarHidden(false);
   $('#exitFocus').onclick = () => setFocus(false);

@@ -1,7 +1,7 @@
 import { TextLayer } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { applyHl, removeHl, restyleHl } from './anchors.js';
 import { fold } from './parse.js';
-import { settings, saveSettings } from './settings.js';
+import { settings, saveSettings, themeOf } from './settings.js';
 
 const snip = (s, i, len) => {
   const a = Math.max(0, i - 36);
@@ -67,7 +67,7 @@ export class FlowView {
       this.secs.push(sec);
     });
     this.el.append(doc);
-    this.el.addEventListener('scroll', () => app.onScroll(this), { passive: true });
+    this.el.addEventListener('scroll', () => { this.lastScroll = Date.now(); app.onScroll(this); }, { passive: true });
     this.el.addEventListener('click', (e) => this.onClick(e));
   }
 
@@ -84,12 +84,10 @@ export class FlowView {
   seek(r) { this.el.scrollTop = r * Math.max(this.el.scrollHeight - this.el.clientHeight, 0); }
 
   page() {
-    const top = this.el.getBoundingClientRect().top + 12;
-    let cur = 0;
-    for (let i = 0; i < this.secs.length; i++) {
-      if (this.secs[i].getBoundingClientRect().top <= top) cur = i; else break;
-    }
-    return cur;
+    const y = this.el.scrollTop + 12;
+    let lo = 0, hi = this.secs.length - 1;
+    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (this.secs[mid].offsetTop <= y) lo = mid; else hi = mid - 1; }
+    return lo;
   }
   label() {
     return this.paged ? `Pág. ${this.page() + 1} de ${this.secs.length}` : `${Math.round(this.ratio() * 100)} %`;
@@ -239,8 +237,8 @@ export class PdfPageView {
         pg._vis = en.isIntersecting;
         if (en.isIntersecting) { if (!this.off && !pg._on) { this.q.push(i); this.pump(); } } else this.drop(i);
       }
-    }, { root: this.el, rootMargin: '150% 0px' });
-    this.el.addEventListener('scroll', () => app.onScroll(this), { passive: true });
+    }, { root: this.el, rootMargin: '200% 0px' });
+    this.el.addEventListener('scroll', () => { this.lastScroll = Date.now(); app.onScroll(this); }, { passive: true });
     this.el.addEventListener('click', (e) => {
       const m = e.target.closest('mark.hl');
       if (m && getSelection().isCollapsed) app.editHl(m.dataset.hid, m);
@@ -252,6 +250,28 @@ export class PdfPageView {
     });
     this.ro.observe(this.el);
     pdfOutline(pdf).then((t) => { this.toc = t; });
+    this.prefetch();
+  }
+
+  // Medidas reales de todas las páginas (sin dibujarlas): así el alto no cambia al aparecer cada una y el scroll no da saltos.
+  async prefetch() {
+    this.ratios = [];
+    for (let i = 0; i < this.pgs.length && !this.dead; i++) {
+      try {
+        const page = await this.pdf.getPage(i + 1);
+        const vp = page.getViewport({ scale: 1 });
+        page.cleanup();
+        this.ratios[i] = vp.height / vp.width;
+        const pg = this.pgs[i];
+        if (this.pw && !pg._on && !pg.firstChild) pg.style.height = Math.round(this.pw * this.ratios[i]) + 'px';
+      } catch { /* página dañada */ }
+      if (i % 6 === 5) await new Promise((r) => setTimeout(r, 30));
+    }
+  }
+
+  // Espera a que se detenga el desplazamiento antes de hacer trabajo pesado en el hilo principal.
+  async whenIdle() {
+    for (let k = 0; k < 40 && Date.now() - (this.lastScroll || 0) < 160; k++) await new Promise((r) => setTimeout(r, 80));
   }
 
   width() {
@@ -269,7 +289,7 @@ export class PdfPageView {
     this.pgs.forEach((pg, i) => {
       this.drop(i);
       pg.style.width = this.pw + 'px';
-      pg.style.height = Math.round(this.pw * this.ratio_) + 'px';
+      pg.style.height = Math.round(this.pw * (this.ratios?.[i] ?? this.ratio_)) + 'px';
       this.io.unobserve(pg);
     });
     this.pgs.forEach((pg) => this.io.observe(pg));
@@ -297,8 +317,8 @@ export class PdfPageView {
       const base = page.getViewport({ scale: 1 });
       const scale = this.pw / base.width;
       const vp = page.getViewport({ scale });
-      pg.style.width = vp.width + 'px';
-      pg.style.height = vp.height + 'px';
+      pg.style.width = Math.round(vp.width) + 'px';
+      pg.style.height = Math.round(vp.height) + 'px';
       pg.style.setProperty('--scale-factor', scale);
       pg.style.setProperty('--total-scale-factor', scale);
       // Límite de píxeles por página para no agotar la memoria con zoom alto.
@@ -308,13 +328,29 @@ export class PdfPageView {
       cv.height = Math.floor(vp.height * dpr);
       cv.style.width = vp.width + 'px';
       cv.style.height = vp.height + 'px';
-      pg._task = page.render({ canvasContext: cv.getContext('2d'), viewport: page.getViewport({ scale: scale * dpr }) });
+      // El fondo del tema se pinta una sola vez en el canvas (sin mezclas de capas durante el scroll).
+      const th = themeOf();
+      const dark = th === 'noche' || th === 'oled';
+      const paper = { papel: '#F6F1E7', sepia: '#E9D9B8' }[th] || '#ffffff';
+      pg._task = page.render({ canvasContext: cv.getContext('2d'), viewport: page.getViewport({ scale: scale * dpr }), background: dark ? '#ffffff' : paper });
       await pg._task.promise;
+      if (!alive()) return;
+      let shown = cv;
+      if (dark) {
+        // Modo noche: la inversión de colores se hornea una vez; así el scroll no recalcula filtros en cada cuadro.
+        const t = document.createElement('canvas');
+        t.width = cv.width; t.height = cv.height;
+        t.style.width = cv.style.width; t.style.height = cv.style.height;
+        const tc = t.getContext('2d');
+        if ('filter' in tc) { tc.filter = 'invert(0.9) hue-rotate(180deg)'; tc.drawImage(cv, 0, 0); cv.width = cv.height = 0; shown = t; } else cv.classList.add('cssinv');
+      }
+      pg.replaceChildren(shown);
+      await this.whenIdle();
       if (!alive()) return;
       const tl = document.createElement('div');
       tl.className = 'textLayer';
       tl.dataset.sec = i;
-      pg.replaceChildren(cv, tl);
+      pg.append(tl);
       pg._tl = new TextLayer({ textContentSource: page.streamTextContent(), container: tl, viewport: vp });
       await pg._tl.render();
       if (!alive()) return;
@@ -430,6 +466,7 @@ export class PdfPageView {
     this.pgs.forEach((pg) => { this.io.unobserve(pg); this.io.observe(pg); });
   }
   destroy() {
+    this.dead = true;
     this.suspend();
     this.io.disconnect();
     this.ro.disconnect();
