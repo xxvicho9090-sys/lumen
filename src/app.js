@@ -99,12 +99,29 @@ async function applyMirror(book) {
 }
 
 // ---------- pantalla completa / concentración ----------
+// En pantalla completa la barra inferior no está: una pastilla discreta muestra en qué página vas (o el porcentaje en Word/EPUB/TXT).
+// Al cambiar de página se resalta un momento y luego queda tenue para no distraer.
+function renderPageChip() {
+  const chip = $('#pageChip');
+  if (!chip) return;
+  const v = activeView();
+  if (!S.focusMode || !v || S.screen !== 'reader') { chip.hidden = true; return; }
+  const t = v.label();
+  if (chip.textContent !== t) {
+    chip.textContent = t;
+    chip.classList.add('show');
+    clearTimeout(S.chipT);
+    S.chipT = setTimeout(() => chip.classList.remove('show'), 1600);
+  }
+  chip.hidden = false;
+}
 async function setFocus(on) {
   on = !!on && S.screen === 'reader';
   if (on === !!S.focusMode) return;
   S.focusMode = on;
   document.body.classList.toggle('focus', on);
   renderFocusDocs();
+  renderPageChip();
   if (on) { closePanel(); hideBar(); }
   try {
     if (native) await (on ? SystemBars.hide() : SystemBars.show());
@@ -1016,6 +1033,7 @@ function renderBar() {
   $('#hlN').parentElement.dataset.n = n || '';
   $('#markBtn').classList.toggle('on', settings.auto);
   $('#bmBtn').classList.toggle('on', !!currentMark(v));
+  renderPageChip();
 }
 
 // ---------- paneles laterales / hojas ----------
@@ -2069,6 +2087,7 @@ export async function start() {
       <div id="focusList" hidden></div>
       <div id="zoomCtl" aria-label="Zoom"><button id="zOut" class="ib" aria-label="Alejar">−</button><button id="zReset" class="ib" aria-label="Zoom normal">1:1</button><button id="zIn" class="ib" aria-label="Acercar">+</button></div>
       <div id="zoomHud" role="status"></div>
+      <div id="pageChip" role="status" aria-live="off" hidden></div>
       <button id="barShow" aria-label="Mostrar barra inferior" hidden>${I.chevron}</button>
       <div id="focusTimer" hidden></div>
       <div id="selActions" hidden><span id="selCount"></span><button id="selMove" class="btn">Mover</button><button id="selAll" class="btn ghost">Todo</button><button id="selDel" class="btn ghost">Eliminar</button><button id="selCancel" class="btn ghost">Cancelar</button></div>
@@ -2370,6 +2389,6 @@ export async function start() {
   }
   if (!S.books.length && !settings.welcomed) setTimeout(showWelcome, 500);
   // Solo en desarrollo: acceso para pruebas automáticas (no existe en la versión publicada).
-  if (import.meta.env.DEV) window.__lumen = { S, DB, openBook, closeTab, startWork, endWork, endBreak, stopTimer, openFeynman, review, setPdfMode, exportBackup, backupData, importBackup, addFile, onFiles, toggleTts, stopTts, ttsItems, splitChunks, hlList, createHl, pdfTexts, renderLibrary, goLibrary, openFolder, toggleBookmark, setFocus };
+  if (import.meta.env.DEV) window.__lumen = { renderPageChip, S, DB, openBook, closeTab, startWork, endWork, endBreak, stopTimer, openFeynman, review, setPdfMode, exportBackup, backupData, importBackup, addFile, onFiles, toggleTts, stopTts, ttsItems, splitChunks, hlList, createHl, pdfTexts, renderLibrary, goLibrary, openFolder, toggleBookmark, setFocus };
   return true;
 }
