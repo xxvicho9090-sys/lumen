@@ -17,6 +17,7 @@ import chevronDown from 'lucide-static/icons/chevron-down.svg?raw';
 import chevronLeft from 'lucide-static/icons/chevron-left.svg?raw';
 import bookmark from 'lucide-static/icons/bookmark.svg?raw';
 import lightbulb from 'lucide-static/icons/lightbulb.svg?raw';
+import sparkles from 'lucide-static/icons/sparkles.svg?raw';
 import layoutGrid from 'lucide-static/icons/layout-grid.svg?raw';
 import timer from 'lucide-static/icons/timer.svg?raw';
 import volume from 'lucide-static/icons/volume-2.svg?raw';
@@ -43,7 +44,7 @@ export const I = {
   expand: ic(maximize), share: ic(share), chevron: ic(chevronDown), chevronL: ic(chevronLeft), bookmark: ic(bookmark),
   bulb: ic(lightbulb), grid: ic(layoutGrid), rows: ic(list), timer: ic(timer), voice: ic(volume), play: ic(play),
   pause: ic(pause), stop: ic(square), close: ic(x), check: ic(check), folder: ic(folder), more: ic(ellipsis),
-  layers: ic(layers), offline: ic(wifiOff),
+  layers: ic(layers), offline: ic(wifiOff), spark: ic(sparkles),
 };
 
 // Marca: libro abierto con una chispa de luz.

@@ -12,6 +12,8 @@ import { FlowView, PdfPageView, pdfOutline } from './views.js';
 import { anchorsFromRange } from './anchors.js';
 import { onUpdateStatus, getUpdateStatus, checkForUpdate, applyNow } from './updater.js';
 import { I, LOGO } from './icons.js';
+import * as AI from './ai.js';
+import { initAsistente, abrirAsistente, explicarSeleccion } from './asistente.js';
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 const native = Capacitor.isNativePlatform();
@@ -441,7 +443,7 @@ let selT, hideT;
 function showBar(rect, mode, cur, canErase) {
   const bar = $('#selbar');
   bar.innerHTML = HL_COLORS.map((c, i) => `<button class="c${i === cur ? ' cur' : ''}" data-c="${i}" style="background:${c}" aria-label="${HL_NAMES[i]}"></button>`).join('')
-    + `<span class="sep"></span><button class="a" data-a="note">${I.note}Nota</button><button class="a" data-a="copy" aria-label="Copiar">${I.copy}</button>`
+    + `<span class="sep"></span><button class="a" data-a="note">${I.note}Nota</button><button class="a" data-a="explain" aria-label="Explicar con IA">${I.spark}Explicar</button><button class="a" data-a="copy" aria-label="Copiar">${I.copy}</button>`
     + (mode === 'edit' ? `<button class="a" data-a="del" aria-label="Quitar subrayado">${I.trash}Borrar</button>` : '')
     + (mode === 'new' && canErase ? `<button class="a" data-a="erase" aria-label="Borrar subrayados de la selección">${I.trash}Borrar</button>` : '');
   bar.style.visibility = 'hidden';
@@ -508,6 +510,11 @@ async function onBarClick(e) {
       const n = await askText('Nota', '', true, 'Escribe tu nota…');
       if (n != null) await createHl(settings.color, n.trim()); else hideBar();
     } else { const f = findHl(p.id); hideBar(); await setNote(f.rec, activeOrAny(f.bookId)); }
+  } else if (b.dataset.a === 'explain') {
+    const tx = p.kind === 'new' ? copyAnchors(p) : findHl(p.id).rec.text;
+    const view = p.view || activeView();
+    getSelection().removeAllRanges(); hideBar();
+    explicarSeleccion(tx, view);
   } else if (b.dataset.a === 'copy') {
     copyText(p.kind === 'new' ? copyAnchors(p) : findHl(p.id).rec.text);
     getSelection().removeAllRanges(); hideBar();
@@ -1540,6 +1547,8 @@ async function openFeynman(opts = {}) {
     box.classList.add('fey');
     const gaps = new Set(prev?.gaps || []);
     let analyzed = false;
+    let aiRes = prev?.ai || null;
+    let aiAc = null;
     const ta = h('textarea', { class: 'fe-ta', placeholder: 'Con mis palabras: ¿qué es, cómo funciona y por qué importa? Sin mirar el texto…' });
     ta.value = prev?.text || '';
     const analogy = h('textarea', { class: 'fe-ta small', placeholder: 'Una analogía o ejemplo cotidiano que lo haga obvio (opcional)…' });
@@ -1547,12 +1556,18 @@ async function openFeynman(opts = {}) {
     const an = h('div', { class: 'fe-an' });
     an.hidden = true;
     const gapIn = h('input', { class: 'sbox', placeholder: 'Agregar otra laguna y Enter' });
+    const ESTADO_IA = { bien: ['✓', 'fe-ok', 'Bien'], parcial: ['≈', 'fe-part', 'A medias'], falta: ['✗', 'fe-miss', 'Falta'], incorrecto: ['!', 'fe-miss', 'Incorrecto'] };
     const paint = () => {
       const cov = coverage(terms, ta.value);
       const ok = cov.filter((x) => x.ok).length;
       an.replaceChildren(
-        h('div', { class: 'fe-sum2' }, terms.length ? `Tu explicación cubre ${ok} de ${cov.length} conceptos clave del bloque.` : 'No encontré conceptos repetidos en este bloque; revisa tú mismo contra el texto.'),
-        h('div', { class: 'chips' }, ...cov.map((x) => h('button', { class: 'chip ' + (x.ok ? 'fe-ok' : 'fe-miss') + (gaps.has(x.t) ? ' on' : ''), title: 'Tocar para marcar o quitar como laguna', onclick: () => { if (gaps.has(x.t)) gaps.delete(x.t); else gaps.add(x.t); paint(); } }, `${x.ok ? '✓' : '✗'} ${x.t}`))),
+        aiRes
+          ? h('div', {},
+            h('div', { class: 'fe-sum2' }, `Corrección con IA: ${aiRes.ideas.filter((x) => x.estado === 'bien').length} de ${aiRes.ideas.length} ideas bien explicadas.`),
+            aiRes.resumen ? h('div', { class: 'sub fe-ai-res' }, aiRes.resumen) : null,
+            h('ul', { class: 'fe-ideas' }, ...aiRes.ideas.map((x) => { const [ic, cl, et] = ESTADO_IA[x.estado]; return h('li', { class: cl }, h('span', { class: 'fe-ic', 'aria-label': et }, ic), h('div', {}, h('b', {}, x.idea), x.comentario ? h('div', { class: 'sub' }, x.comentario) : null)); })))
+          : h('div', { class: 'fe-sum2' }, terms.length ? `Tu explicación cubre ${ok} de ${cov.length} conceptos clave del bloque.` : 'No encontré conceptos repetidos en este bloque; revisa tú mismo contra el texto.'),
+        aiRes ? null : h('div', { class: 'chips' }, ...cov.map((x) => h('button', { class: 'chip ' + (x.ok ? 'fe-ok' : 'fe-miss') + (gaps.has(x.t) ? ' on' : ''), title: 'Tocar para marcar o quitar como laguna', onclick: () => { if (gaps.has(x.t)) gaps.delete(x.t); else gaps.add(x.t); paint(); } }, `${x.ok ? '✓' : '✗'} ${x.t}`))),
         h('div', { class: 'lbl' }, `Lagunas por reforzar · ${gaps.size}`),
         h('div', { class: 'chips' }, ...[...gaps].map((g) => h('button', { class: 'chip fe-gap', onclick: () => { gaps.delete(g); paint(); } }, `${g} ×`))),
         gapIn,
@@ -1561,17 +1576,34 @@ async function openFeynman(opts = {}) {
     gapIn.addEventListener('keydown', (e) => { if (e.key === 'Enter' && gapIn.value.trim()) { gaps.add(gapIn.value.trim()); gapIn.value = ''; paint(); gapIn.focus(); } });
     const compare = () => {
       if (ta.value.trim().length < 15) { toast('Escribe primero tu explicación (aunque sea corta)'); return false; }
-      if (!analyzed) for (const x of coverage(terms, ta.value)) if (!x.ok) gaps.add(x.t);
+      if (!analyzed && !aiRes) for (const x of coverage(terms, ta.value)) if (!x.ok) gaps.add(x.t);
       analyzed = true;
       an.hidden = false;
       paint();
       return true;
     };
+    const corregirIA = async () => {
+      if (ta.value.trim().length < 15) { toast('Escribe primero tu explicación (aunque sea corta)'); return; }
+      aiAc?.abort(); aiAc = new AbortController();
+      aiBtn.disabled = true; aiBtn.textContent = 'La IA está revisando…';
+      an.hidden = false;
+      an.replaceChildren(h('div', { class: 'sub ai-wait' }, 'Comparando tu explicación con el texto…'));
+      try {
+        const r = await AI.evaluarExplicacion({ texto: norm.slice(0, 9000), explicacion: ta.value, signal: aiAc.signal });
+        aiRes = r; analyzed = true;
+        for (const x of r.ideas) if (x.estado !== 'bien') gaps.add(x.idea);
+        paint();
+      } catch (e) {
+        if (e?.name === 'AbortError') return;
+        if (analyzed || aiRes) paint(); else { an.replaceChildren(h('div', { class: 'notice' }, e?.message || 'No pude usar la IA.'), h('button', { class: 'btn ghost', onclick: () => { analyzed = false; compare(); } }, 'Comparar sin IA'), h('button', { class: 'btn ghost', onclick: () => abrirAsistente('ajustes') }, 'Ajustes de IA')); }
+      } finally { aiBtn.disabled = false; aiBtn.replaceChildren(h('span', { html: I.spark }), ' Corregir con IA'); }
+    };
+    const aiBtn = h('button', { class: 'btn', onclick: corregirIA }, h('span', { html: I.spark }), ' Corregir con IA');
     const save = async (reread) => {
       if (!analyzed && !compare()) return;
-      const total = terms.length, covered = coverage(terms, ta.value).filter((x) => x.ok).length;
+      const total = aiRes ? aiRes.ideas.length : terms.length, covered = aiRes ? aiRes.ideas.filter((x) => x.estado === 'bien').length : coverage(terms, ta.value).filter((x) => x.ok).length;
       const card = prev || { id: DB.uid(), bookId: book.id, ts: Date.now(), label: cap.label, pos: cap.pos, excerpt: norm.slice(0, 3000), level: 0 };
-      Object.assign(card, { text: ta.value.trim(), analogy: analogy.value.trim(), gaps: [...gaps], terms, covered, total, last: Date.now(), due: Date.now() + 864e5, fixed: (prev?.fixed || []).filter((g) => gaps.has(g)) });
+      Object.assign(card, { ai: aiRes, text: ta.value.trim(), analogy: analogy.value.trim(), gaps: [...gaps], terms, covered, total, last: Date.now(), due: Date.now() + 864e5, fixed: (prev?.fixed || []).filter((g) => gaps.has(g)) });
       if (!prev) S.fey.push(card);
       await saveFey();
       if (v) { v.trk = null; }
@@ -1581,7 +1613,7 @@ async function openFeynman(opts = {}) {
       if (reread && cap.pos && v) { gotoMark(v, { pos: cap.pos }); setTimeout(renderBar, 80); }
     };
     if (prev) { analyzed = true; an.hidden = false; paint(); }
-    box._onClose = () => { try { rec?.stop(); } catch { /* ya detenido */ } };
+    box._onClose = () => { aiAc?.abort(); try { rec?.stop(); } catch { /* ya detenido */ } };
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     var rec = null;
     const mic = SR ? h('button', { class: 'chip', onclick: () => {
@@ -1598,7 +1630,7 @@ async function openFeynman(opts = {}) {
       h('h3', {}, opts.card ? 'Reexplicar' : opts.auto ? 'Pausa Feynman' : 'Explícalo con tus palabras'),
       h('div', { class: 'sub fe-intro' }, `${book.title} · ${cap.label}. Aparta el texto: explícaselo a alguien de 10 años, sin jerga. Donde te trabes, ahí está la laguna.`),
       ta,
-      h('div', { class: 'fe-row' }, mic, h('button', { class: 'btn ghost', onclick: compare }, 'Comparar con el texto')),
+      h('div', { class: 'fe-row' }, mic, h('button', { class: 'btn ghost', onclick: compare }, 'Comparar con el texto'), aiBtn),
       an,
       h('div', { class: 'lbl' }, 'Analogía'),
       analogy,
@@ -2056,6 +2088,7 @@ export async function start() {
     <div id="tabs" role="tablist"></div>
     <button class="ib split-only" id="splitBtn" aria-label="Dividir pantalla">${I.split}</button>
     <button class="btn" id="installBtn" hidden>${I.download}<span>Instalar app</span></button>
+    <button class="ib" id="aiBtn" aria-label="Asistente de IA">${I.spark}<i id="aiDot"></i></button>
     <button class="ib" id="cfgBtn" aria-label="Ajustes">${I.sliders}</button>
   </header>
   <div id="body">
@@ -2108,6 +2141,7 @@ export async function start() {
       <button id="moreBtn" aria-haspopup="true" aria-expanded="false" aria-label="Más opciones">${I.more}Más</button>
     </div>
     <div id="morePop" hidden>
+      <button id="askBtn">${I.spark}Asistente de IA</button>
       <button id="markBtn">${I.marker}Subrayar al seleccionar</button>
       <button id="ttsBtn">${I.voice}Leer en voz alta</button>
       <button id="timerBtn">${I.timer}<span id="timerTxt">Tiempo</span></button>
@@ -2140,6 +2174,11 @@ export async function start() {
 
   $('#homeBtn').onclick = goLibrary;
   $('#cfgBtn').onclick = () => openPanel('cfg');
+  $('#aiBtn').onclick = () => abrirAsistente('resumir');
+  initAsistente({ h, modal, toast, activeView, pdfTexts, captureRead, fold, I, copy: copyText });
+  const aiDot = () => $('#aiDot')?.classList.toggle('on', AI.hayIA());
+  AI.suscribir(aiDot);
+  AI.iniciar().then(aiDot).catch(() => {});
   $('#splitBtn').onclick = toggleSplit;
   $('#installBtn').onclick = doInstall;
   addEventListener('lumen-theme', () => S.views.forEach((v) => v.kind === 'pdf' && v.relayout?.(true)));
@@ -2241,6 +2280,7 @@ export async function start() {
     else if (b.id === 'ttsBtn') toggleTts();
     else if (b.id === 'timerBtn') timerMenu();
     else if (b.id === 'feyBtn') openFeynman();
+    else if (b.id === 'askBtn') abrirAsistente('preguntar');
     else if (b.id === 'markBtn') { saveSettings({ auto: !settings.auto }); toast(settings.auto ? 'Marcador automático activado' : 'Marcador automático apagado'); renderBar(); }
   };
   $('#seek').oninput = (e) => { e.target.style.setProperty('--pos', (e.target.value / 10) + '%'); const v = activeView(); if (v) v.seek(e.target.value / 1000); };
