@@ -144,17 +144,36 @@ async function viaOllama(messages, signal, esquema) {
   if (!res.ok) throw new AiError('http', `Ollama respondió con error (${res.status}).`);
   return (await res.json())?.message?.content ?? '';
 }
-async function viaLocal(messages, signal, esquema) {
+// La IA del dispositivo falla a veces de dos formas: la decodificación guiada por esquema se rechaza a medio camino
+// («Grammar matcher rejected…», se vio en una tablet) o la GPU pierde el modelo («Model not loaded»). Se sigue sin esquema / se recarga el motor.
+const errorGramatica = (e) => /grammar|rejected the newly sampled/i.test(String(e?.message || e));
+const modeloPerdido = (e) => /not loaded|ModelNotLoaded|device.{0,12}lost|DeviceLost|out of memory|OutOfMemory/i.test(String(e?.message || e));
+const reiniciarMotor = () => { try { worker?.terminate(); } catch { /* ya detenido */ } worker = null; motor = null; cargando = null; };
+async function viaLocalUnaVez(messages, signal, esquema, sinEsquema) {
   const m = await prepararLocal();
   const parar = () => m.interruptGenerate?.();
   signal?.addEventListener('abort', parar, { once: true });
   try {
-    const r = await m.chat.completions.create({ messages: recortar('local', messages), temperature: 0.2, max_tokens: 1400, ...(esquema ? { response_format: { type: 'json_object', schema: JSON.stringify(esquema) } } : {}) });
+    if (sinEsquema) { try { await m.resetChat?.(); } catch { /* sin conversación previa */ } }
+    let msgs = recortar('local', messages);
+    if (esquema && sinEsquema) msgs = msgs.map((x, i) => (i === msgs.length - 1 ? { ...x, content: x.content + '\n\nResponde únicamente con el JSON pedido, sin texto antes ni después.' } : x));
+    const r = await m.chat.completions.create({ messages: msgs, temperature: 0.2, max_tokens: 1400, ...(esquema && !sinEsquema ? { response_format: { type: 'json_object', schema: JSON.stringify(esquema) } } : {}) });
     return r.choices?.[0]?.message?.content ?? '';
-  } catch (e) {
-    if (e?.name === 'AbortError') throw e;
-    throw new AiError('http', `La IA dentro de la app falló: ${String(e?.message || e).slice(0, 160)}`);
   } finally { signal?.removeEventListener('abort', parar); }
+}
+async function viaLocal(messages, signal, esquema) {
+  let sinEsquema = ls.get('lumen.ai.sinGramatica') === '1';
+  let recargado = false;
+  for (let n = 0; n < 3; n++) {
+    try { return await viaLocalUnaVez(messages, signal, esquema, sinEsquema); } catch (e) {
+      if (e?.name === 'AbortError' || signal?.aborted) throw e;
+      if (errorGramatica(e) && !sinEsquema) { sinEsquema = true; ls.set('lumen.ai.sinGramatica', '1'); continue; }
+      if (modeloPerdido(e) && !recargado) { recargado = true; reiniciarMotor(); continue; }
+      if (modeloPerdido(e)) throw new AiError('http', 'La memoria gráfica de este dispositivo no alcanzó para la IA de la app (se reinició sola). Cierra otras apps e inténtalo de nuevo.');
+      throw new AiError('http', `La IA dentro de la app falló: ${String(e?.message || e).slice(0, 160)}`);
+    }
+  }
+  throw new AiError('http', 'La IA dentro de la app no pudo responder. Inténtalo de nuevo.');
 }
 
 // Pregunta con respaldo automático. esquema = JSON Schema (respuesta estructurada); sin esquema devuelve texto libre.
