@@ -12,6 +12,7 @@ import { FlowView, PdfPageView, pdfOutline } from './views.js';
 import { anchorsFromRange } from './anchors.js';
 import { onUpdateStatus, getUpdateStatus, checkForUpdate, applyNow } from './updater.js';
 import { I, LOGO } from './icons.js';
+import { MANIFIESTO, CARPETA_EXPORT, nombresArchivo, armarManifiesto, leerManifiesto, emparejar, mapearCarpetas, datosDelLibro } from './traspaso.js';
 import * as AI from './ai.js';
 import { initAsistente, abrirAsistente, explicarSeleccion } from './asistente.js';
 
@@ -1218,7 +1219,9 @@ function renderCfg(box, v) {
       native ? h('button', { class: 'btn', onclick: () => (st.state === 'ready' ? applyNow() : checkForUpdate()) }, st.state === 'ready' ? 'Actualizar ahora' : 'Revisar')
         : h('button', { class: 'btn', onclick: () => location.reload() }, 'Recargar')),
     h('div', { class: 'row2' }, h('div', {}, h('div', {}, 'Copia de subrayados'), h('div', { class: 'sub' }, 'Pasa tus marcas y progreso entre celular y laptop')),
-      h('div', { style: 'display:flex;gap:8px' }, h('button', { class: 'btn ghost', onclick: exportBackup }, 'Exportar'), h('button', { class: 'btn ghost', onclick: () => $('#bk').click() }, 'Importar'))));
+      h('div', { style: 'display:flex;gap:8px' }, h('button', { class: 'btn ghost', onclick: exportBackup }, 'Exportar'), h('button', { class: 'btn ghost', onclick: () => $('#bk').click() }, 'Importar'))),
+    h('div', { class: 'row2' }, h('div', {}, h('div', {}, 'Traspasar todo a otro dispositivo'), h('div', { class: 'sub' }, 'Documentos con sus carpetas, subrayados y progreso: por ejemplo de la laptop a la tablet')),
+      h('div', { style: 'display:flex;gap:8px' }, h('button', { class: 'btn ghost', onclick: exportarTodo }, 'Exportar todo'), h('button', { class: 'btn ghost', onclick: importarTodoAviso }, 'Importar todo'))));
   box.replaceChildren(...kids);
 }
 async function setPdfMode(book, mode) {
@@ -1230,6 +1233,97 @@ async function setPdfMode(book, mode) {
   closePanel();
   book.pos = { page, m: mode === 'text' ? 'text' : 'page' };
   await openBook(book.id);
+}
+
+// ---------- traspaso completo a otro dispositivo (documentos + carpetas + subrayados + progreso) ----------
+// Exportar: una carpeta con los documentos tal cual y «lumen-traspaso.json». Importar: se eligen todos esos archivos y se arma la biblioteca igual.
+async function exportarTodo() {
+  if (!S.books.length) { toast('Todavía no hay documentos que traspasar'); return; }
+  if (native) { await modal((box, close) => { box.append(h('h3', {}, 'Exportar desde la tablet'), h('p', { class: 'sub', style: 'line-height:1.55' }, 'Para sacar todos tus documentos de la tablet, abre Lumen en el navegador del computador (lumen-lector.onrender.com) y usa allí “Importar todo” con los archivos. Desde la tablet puedes exportar la copia de subrayados con el botón “Exportar” de arriba.'), h('div', { class: 'acts' }, h('button', { class: 'btn', onclick: () => close(null) }, 'Entendido'))); }); return; }
+  const nombres = nombresArchivo(S.books);
+  const manifiesto = JSON.stringify(armarManifiesto({ books: S.books, folders: S.folders, hl: await DB.allHl(), fey: S.fey, stats: S.stats }, nombres));
+  const total = S.books.length;
+  let sin = 0;
+  try {
+    if (window.showDirectoryPicker) {
+      let dir;
+      try { dir = await window.showDirectoryPicker({ mode: 'readwrite' }); } catch { return; } // cancelado
+      const sub = await dir.getDirectoryHandle(CARPETA_EXPORT, { create: true });
+      const escribir = async (nombre, datos) => { const w = await (await sub.getFileHandle(nombre, { create: true })).createWritable(); await w.write(datos); await w.close(); };
+      for (let i = 0; i < total; i++) {
+        const b = S.books[i];
+        loading(true, `Copiando ${i + 1} de ${total} · ${b.name}`);
+        const blob = await DB.getBlob(b.id);
+        if (!blob) { sin++; continue; }
+        await escribir(nombres.get(b.id), blob);
+      }
+      await escribir(MANIFIESTO, manifiesto);
+    } else {
+      // Sin selector de carpetas (Firefox, Safari…): se descargan los archivos uno por uno a Descargas.
+      for (let i = 0; i < total; i++) {
+        const b = S.books[i];
+        loading(true, `Descargando ${i + 1} de ${total} · ${b.name}`);
+        const blob = await DB.getBlob(b.id);
+        if (!blob) { sin++; continue; }
+        const a = h('a', { href: URL.createObjectURL(blob), download: nombres.get(b.id) });
+        document.body.append(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+        await new Promise((r) => setTimeout(r, 450));
+      }
+      const a = h('a', { href: URL.createObjectURL(new Blob([manifiesto], { type: 'application/json' })), download: MANIFIESTO });
+      document.body.append(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+    }
+  } catch (e) { loading(false); toast('No se pudo exportar: ' + (e?.message || e), { ms: 6000 }); return; }
+  loading(false);
+  await modal((box, close) => {
+    box.append(h('h3', {}, 'Listo para llevarlo'),
+      h('p', { class: 'sub', style: 'line-height:1.6' }, `Se copiaron ${total - sin} documentos${window.showDirectoryPicker ? ` en la carpeta “${CARPETA_EXPORT}”` : ' a tu carpeta de Descargas'}, más el archivo “${MANIFIESTO}” con tus carpetas, subrayados y progreso.`),
+      h('ol', { class: 'tras-pasos' }, h('li', {}, 'Pasa esa carpeta a la tablet (cable USB, Google Drive, etc.).'), h('li', {}, 'En Lumen de la tablet: Ajustes → “Importar todo”.'), h('li', {}, 'Selecciona TODOS los archivos de la carpeta, incluido “lumen-traspaso.json”.')),
+      h('div', { class: 'acts' }, h('button', { class: 'btn', onclick: () => close(null) }, 'Listo')));
+  });
+}
+async function importarTodoAviso() {
+  const ok = await modal((box, close) => {
+    box.append(h('h3', {}, 'Importar todo'),
+      h('p', { class: 'sub', style: 'line-height:1.6' }, `Elige TODOS los archivos de la carpeta “${CARPETA_EXPORT}” (en el selector, toca uno y usa “Seleccionar todo”). Debe estar “${MANIFIESTO}”. Lo que ya tengas en este dispositivo no se toca ni se duplica.`),
+      h('div', { class: 'acts' }, h('button', { class: 'btn ghost', onclick: () => close(null) }, 'Cancelar'), h('button', { class: 'btn', onclick: () => close(true) }, 'Elegir archivos')));
+  });
+  if (ok) $('#trasIn').click();
+}
+async function importarTodo(lista) {
+  const files = [...lista];
+  const mf = files.find((f) => f.name.toLowerCase() === MANIFIESTO);
+  if (!mf) { toast(`Falta el archivo “${MANIFIESTO}”: selecciónalo junto con los documentos`, { ms: 7000 }); return; }
+  let man;
+  try { man = leerManifiesto(await mf.text()); } catch (e) { toast('No se pudo leer el traspaso: ' + e.message, { ms: 6000 }); return; }
+  const { pares, faltan } = emparejar(man, files.filter((f) => f !== mf));
+  if (!pares.length) { toast('No encontré los documentos del traspaso entre lo que elegiste', { ms: 6000 }); return; }
+  DB.persist();
+  let nuevos = 0, ya = 0, fallo = 0;
+  const idMap = new Map();
+  try {
+    const { mapa, nuevas } = mapearCarpetas(man.folders, S.folders, DB.uid);
+    if (nuevas.length) { S.folders.push(...nuevas); await saveFolders(); }
+    for (let i = 0; i < pares.length; i++) {
+      const { libro, archivo } = pares[i];
+      loading(true, `Importando ${i + 1} de ${pares.length} · ${libro.name}`);
+      let local = S.books.find((b) => b.name === libro.name && b.size === libro.size);
+      if (local) ya++;
+      else {
+        const r = await addFile(archivo, libro.tag || 'estudio', null);
+        if (r && r !== 'dupe') { r.name = libro.name; Object.assign(r, datosDelLibro(libro, mapa)); await DB.putBook(r); local = r; nuevos++; } else if (!r) fallo++;
+      }
+      if (local) idMap.set(libro.id, local.id);
+    }
+    const tengo = new Set((await DB.allHl()).map((x) => x.id));
+    for (const x of man.hl) { const bid = idMap.get(x.bookId); if (bid && !tengo.has(x.id)) await DB.putHl({ ...x, bookId: bid }); }
+    for (const c of man.fey) { const bid = idMap.get(c.bookId); if (bid && !S.fey.some((x) => x.id === c.id)) S.fey.push({ ...c, bookId: bid }); }
+    await saveFey();
+    if (man.stats && !Object.keys(S.stats.days || {}).length) { S.stats = man.stats; await DB.kvSet('stats', S.stats); }
+  } catch (e) { console.warn(e); toast('El traspaso se interrumpió: ' + (e?.message || e), { ms: 6000 }); }
+  loading(false);
+  S.libTab = 'books'; S.hl.clear?.(); S.hlLoaded?.clear?.();
+  renderLibrary();
+  toast([`${nuevos} ${nuevos === 1 ? 'documento importado' : 'documentos importados'}`, ya ? `${ya} ya estaban` : '', fallo ? `${fallo} con error` : '', faltan.length ? `${faltan.length} sin archivo (faltó seleccionarlos)` : ''].filter(Boolean).join(' · '), { ms: 8000 });
 }
 
 // ---------- copia de seguridad ----------
@@ -2153,6 +2247,7 @@ export async function start() {
 </div>
 <input type="file" id="file" multiple hidden accept=".pdf,.docx,.epub,.txt,.md,.html,.htm,application/pdf">
 <input type="file" id="bk" hidden accept=".json,application/json">
+<input type="file" id="trasIn" multiple hidden>
 <input type="file" id="dir" hidden webkitdirectory multiple>
 <div id="backdrop" hidden></div><div id="selbar" hidden></div><div id="toast" role="status"></div><div id="modal" hidden></div>`;
 
@@ -2203,6 +2298,7 @@ export async function start() {
   $('#addBtn').onclick = () => $('#fab').click();
   $('#dir').onchange = (e) => { const f = [...e.target.files]; e.target.value = ''; onDir(f); };
   $('#file').onchange = (e) => { const f = [...e.target.files]; e.target.value = ''; onFiles(f); };
+  $('#trasIn').onchange = (e) => { const fl = [...e.target.files]; e.target.value = ''; if (fl.length) importarTodo(fl); };
   $('#bk').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) importBackup(f); };
   $('#q').oninput = (e) => { S.lib.q = e.target.value.trim(); renderLibrary(); $('#q').focus(); };
   $('#libnav').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; if (b.dataset.t === 'books') openFolder('all'); else { S.libTab = b.dataset.t; renderLibrary(); } };
@@ -2429,6 +2525,6 @@ export async function start() {
   }
   if (!S.books.length && !settings.welcomed) setTimeout(showWelcome, 500);
   // Solo en desarrollo: acceso para pruebas automáticas (no existe en la versión publicada).
-  if (import.meta.env.DEV) window.__lumen = { renderPageChip, S, DB, openBook, closeTab, startWork, endWork, endBreak, stopTimer, openFeynman, review, setPdfMode, exportBackup, backupData, importBackup, addFile, onFiles, toggleTts, stopTts, ttsItems, splitChunks, hlList, createHl, pdfTexts, renderLibrary, goLibrary, openFolder, toggleBookmark, setFocus };
+  if (import.meta.env.DEV) window.__lumen = { renderPageChip, S, DB, openBook, closeTab, startWork, endWork, endBreak, stopTimer, openFeynman, review, setPdfMode, exportBackup, exportarTodo, importarTodo, backupData, importBackup, addFile, onFiles, toggleTts, stopTts, ttsItems, splitChunks, hlList, createHl, pdfTexts, renderLibrary, goLibrary, openFolder, toggleBookmark, setFocus };
   return true;
 }

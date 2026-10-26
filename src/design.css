@@ -603,3 +603,4 @@ button.tile:hover{box-shadow:inset 0 0 0 1px var(--acc)}
 .fe-ideas li b,.fe-ideas li .sub{color:var(--tx)}
 .fe-ideas li .sub{color:var(--tx2)}
 .fe-ai-res{margin:0 0 4px;line-height:1.5}
+.tras-pasos{margin:12px 0 4px;padding-left:22px;line-height:1.7;font-size:14.5px}
